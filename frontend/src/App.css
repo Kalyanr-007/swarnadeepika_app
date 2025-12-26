@@ -1,34 +1,65 @@
-.App-logo {
-    height: 40vmin;
-    pointer-events: none;
-}
+/* Additional app-specific styles */
 
-@media (prefers-reduced-motion: no-preference) {
-    .App-logo {
-        animation: App-logo-spin infinite 20s linear;
-    }
-}
-
-.App-header {
-    background-color: #0f0f10;
+.App {
     min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
 }
 
-.App-link {
-    color: #61dafb;
+/* Login page background overlay */
+.login-overlay {
+    background: linear-gradient(135deg, rgba(21, 128, 61, 0.85) 0%, rgba(21, 128, 61, 0.7) 100%);
 }
 
-@keyframes App-logo-spin {
-    from {
-        transform: rotate(0deg);
+/* Product card styles */
+.product-card {
+    transition: all 0.2s ease;
+}
+
+.product-card:hover {
+    transform: scale(1.02);
+}
+
+/* Bill preview shadow */
+.bill-preview {
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+}
+
+/* Table row hover */
+.data-table tbody tr:hover {
+    background-color: rgba(21, 128, 61, 0.05);
+}
+
+/* Badge styles */
+.badge-cash {
+    background-color: #dcfce7;
+    color: #15803d;
+}
+
+.badge-credit {
+    background-color: #fef3c7;
+    color: #ca8a04;
+}
+
+/* Animation for loading states */
+@keyframes pulse-green {
+    0%, 100% {
+        opacity: 1;
     }
-    to {
-        transform: rotate(360deg);
+    50% {
+        opacity: 0.5;
     }
+}
+
+.animate-pulse-green {
+    animation: pulse-green 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Number input hide arrows */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+input[type="number"] {
+    -moz-appearance: textfield;
 }
