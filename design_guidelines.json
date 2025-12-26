@@ -1,0 +1,135 @@
+{
+  "identity": {
+    "persona": "E1: The Anti-AI Designer",
+    "mission": "Create a billing system that feels like a modern digital extension of a traditional Indian agricultural shop—trustworthy, efficient, and culturally rooted.",
+    "principles": [
+      "Fusion: Traditional Ledger Aesthetics x Modern SaaS Precision",
+      "Emotion: Prosperity (Swarna) & Growth (Green)",
+      "Clarity: High contrast for readability in sunlit shops",
+      "Context: Rural Professionalism"
+    ]
+  },
+  "typography": {
+    "primary_font": "Manrope",
+    "secondary_font": "Inter",
+    "regional_font": "Noto Sans Telugu",
+    "usage": {
+      "headings": "Manrope (Bold/ExtraBold) - For page titles and major metrics",
+      "body": "Inter (Regular/Medium) - For tables, inputs, and general text",
+      "shop_name": "Noto Sans Telugu (Bold) - For the bilingual shop header",
+      "bill_text": "Inter (Mono) or Courier Prime - For the printed bill content to mimic typewriter/dot-matrix style"
+    }
+  },
+  "colors": {
+    "palette": {
+      "primary": {
+        "name": "Crop Growth Green",
+        "hex": "#15803d",
+        "tailwind": "bg-green-700",
+        "usage": "Primary buttons, active states, key metrics"
+      },
+      "secondary": {
+        "name": "Harvest Gold",
+        "hex": "#ca8a04",
+        "tailwind": "bg-yellow-600",
+        "usage": "Accents, warnings, 'Swarna' branding elements"
+      },
+      "background": {
+        "name": "Paper White",
+        "hex": "#f8fafc",
+        "tailwind": "bg-slate-50",
+        "usage": "App background"
+      },
+      "surface": {
+        "name": "Clean White",
+        "hex": "#ffffff",
+        "tailwind": "bg-white",
+        "usage": "Cards, tables, bill preview"
+      },
+      "text": {
+        "primary": "#0f172a",
+        "secondary": "#475569",
+        "muted": "#94a3b8"
+      },
+      "bill_accent": {
+        "name": "Ledger Red",
+        "hex": "#dc2626",
+        "tailwind": "border-red-600",
+        "usage": "Top border of the bill preview (traditional book binding reference)"
+      }
+    },
+    "theme_strategy": "Light Mode Only (High contrast for shop usage). No dark mode toggle needed for MVP."
+  },
+  "layout": {
+    "spacing": {
+      "base": "Generous padding (p-6, p-8) to avoid clutter.",
+      "containers": "Cards must have internal padding of p-6 minimum.",
+      "grid_gap": "gap-6 for dashboard, gap-4 for dense data tables."
+    },
+    "grids": {
+      "dashboard": "Mode B: Control Room Grid. Dense data but with breathing room.",
+      "billing": "Split Screen: Left 60% (Action/Input), Right 40% (Live Preview)."
+    }
+  },
+  "components": {
+    "bill_preview": {
+      "description": "A digital twin of a physical bill.",
+      "style": "White container, shadow-xl, p-8, aspect-[1/1.414] (A4 ratio).",
+      "header": "Centered Shop Name in Telugu (Large) and English. Address below.",
+      "table": "Classic grid with borders. Columns: Sr, Particulars, Batch, Exp, Qty, Rate, Amount.",
+      "footer": "Terms & Conditions, Signatures, 'Thank You' note."
+    },
+    "stock_cards": {
+      "description": "Quick view of inventory items.",
+      "style": "Flat border card with color-coded left strip (Green=Good, Red=Low, Yellow=Expiring).",
+      "content": "Product Name, Qty (Big), Batch No (Small)."
+    },
+    "auth_screen": {
+      "description": "Simple PIN/Password entry.",
+      "style": "Split layout. Left: Image (Green Fields). Right: Clean form.",
+      "image_overlay": "Green gradient overlay on the image for text readability."
+    }
+  },
+  "images": {
+    "auth_background": {
+      "url": "https://images.unsplash.com/photo-1754467757901-cb098db061a9?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzd8MHwxfHNlYXJjaHwxfHxsdXNoJTIwZ3JlZW4lMjBhZ3JpY3VsdHVyZSUyMGZpZWxkJTIwaW5kaWF8ZW58MHx8fHwxNzY2NzUyNDE3fDA&ixlib=rb-4.1.0&q=85",
+      "alt": "Lush green agriculture field with mountains",
+      "usage": "Login screen left panel background"
+    },
+    "dashboard_hero": {
+      "url": "https://images.unsplash.com/photo-1757064258569-0af87a5fb9a5?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzd8MHwxfHNlYXJjaHwyfHxsdXNoJTIwZ3JlZW4lMjBhZ3JpY3VsdHVyZSUyMGZpZWxkJTIwaW5kaWF8ZW58MHx8fHwxNzY2NzUyNDE3fDA&ixlib=rb-4.1.0&q=85",
+      "alt": "Palm trees and river",
+      "usage": "Dashboard welcome banner background (subtle opacity)"
+    },
+    "farmer_avatar": {
+      "url": "https://images.unsplash.com/photo-1595956481935-a9e254951d49?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzd8MHwxfHNlYXJjaHwyfHxpbmRpYW4lMjBmYXJtZXIlMjBoYXBweXxlbnwwfHx8fDE3NjY3NTI0MjB8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Happy Indian Farmer",
+      "usage": "Customer profile placeholder"
+    },
+    "stock_placeholder": {
+      "url": "https://images.unsplash.com/photo-1756158450046-24e51d854f71?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzl8MHwxfHNlYXJjaHwxfHxmZXJ0aWxpemVyJTIwYmFncyUyMHNlZWRzJTIwc2hvcHxlbnwwfHx8fDE3NjY3NTI0MTl8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Grain bags in shop",
+      "usage": "Default image for products without photos"
+    }
+  },
+  "visual_enhancers": {
+    "textures": "Use a subtle 'noise' texture on the sidebar background to give it a tactile, paper-like feel.",
+    "shadows": "Soft, diffuse shadows (shadow-lg) for the Bill Preview to make it 'float' above the desk.",
+    "borders": "1px solid borders in neutral-200 for tables. No floating rows."
+  },
+  "universal_guidelines": {
+    "anti_slop": [
+      "Do NOT use default Shadcn slate colors everywhere. Tint them with green.",
+      "Do NOT center the entire app. Use a sidebar layout.",
+      "Do NOT use gradients for text."
+    ],
+    "accessibility": [
+      "Ensure high contrast for the 'Total Amount' display.",
+      "All inputs must have clear labels (no placeholder-only inputs)."
+    ],
+    "testing": [
+      "Add data-testid to: 'login-submit', 'add-product-btn', 'print-bill-btn', 'customer-search-input'."
+    ]
+  },
+  "instructions_to_main_agent": "1. Install 'lucide-react' for icons. 2. Use 'date-fns' for date formatting in the bill. 3. Create a 'BillTemplate' component that accepts data and renders the printable view. 4. Use 'react-to-print' for the printing functionality."
+}
