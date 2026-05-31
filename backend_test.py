@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 
 class SwarnaDeepikaBillingTester:
-    def __init__(self, base_url="https://harvest-receipt-app.preview.emergentagent.com"):
+    def __init__(self, base_url="https://farm-invoice-3.preview.emergentagent.com"):
         self.base_url = base_url
         self.user_token = None
         self.tests_run = 0
