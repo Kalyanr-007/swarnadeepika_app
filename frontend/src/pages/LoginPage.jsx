@@ -9,6 +9,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from "../components/ui/dialog";
 import { toast } from "sonner";
 import { Store, Eye, EyeOff } from "lucide-react";
@@ -262,6 +263,9 @@ const LoginPage = ({ onLogin }) => {
         <DialogContent className="max-w-md" data-testid="forgot-password-dialog">
           <DialogHeader>
             <DialogTitle>Reset Password</DialogTitle>
+            <DialogDescription>
+              Recover your account using your security answer or recovery code.
+            </DialogDescription>
           </DialogHeader>
           {fpStep === 1 ? (
             <div className="space-y-4">

@@ -17,15 +17,20 @@ User language: English (respond in English).
 - Auth: username/password with bcrypt (session stored client-side in localStorage)
 
 ## Implemented features
-- Auth: /api/auth/login, /api/auth/register (bcrypt)
+- Auth: /api/auth/login, /register (bcrypt). **Change password, security-question + one-time recovery code reset** (offline-friendly, no email/SMS). Settings page + Forgot Password dialog on login.
 - Products/Categories CRUD; purchase price hidden except admin endpoint
 - Bills: create (auto bill_no, decrement stock, compute balance), list w/ filters
 - Customers CRUD
 - Loans: pending list, record payments, per-customer/per-bill history
+- **Expenses** (2026-07-03): /api/expenses CRUD; ExpensesPage with free-text category, date-range filter.
+- **Purchases / Stock-in** (2026-07-03): /api/purchases CRUD; restock increments product stock + updates cost; delete reverses stock. PurchasesPage.
+- **Accounts — Cash Flow & P&L** (2026-07-03): /api/reports/summary; AccountsPage with Net Profit/Loss, Net Cash Flow, Revenue, COGS, Gross Profit, Expenses, Cash In/Out, Purchases, Credit Given, daily breakdown, expenses-by-category. Date-range + Today/This-Month quick filters.
 - Dashboard: today sales/cash/credit, pending loans, low stock
-- **Daily Report page (2026-07-03):** `/reports` page + `GET /api/reports/daily?date=YYYY-MM-DD`.
-  Shows day summary (sales, bill count, cash, credit), full transaction list (customer, village,
-  items with qty), item-wise sold summary. Date navigation (prev/next/picker), CSV export, print.
+- Daily Report page: /reports + /api/reports/daily (who bought what, item-wise summary, CSV/print)
+- **Offline Windows desktop app** (2026-07-03): /app/desktop — Electron + PyInstaller-bundled FastAPI/SQLite backend that also serves the React UI. build.bat produces the .exe on Windows. Mirrors all cloud API endpoints. See /app/desktop/README.md. NOT built/tested (requires Windows).
+
+## Nav (sidebar, bilingual, 10 items)
+Dashboard, Billing, Stock, Purchases, Customers, Loans, Expenses, Reports, Accounts, Settings
 
 ## Key files
 - backend/server.py — all API logic
@@ -38,10 +43,11 @@ User language: English (respond in English).
 See /app/memory/test_credentials.md — admin / swarna123
 
 ## Backlog / Roadmap
-- P1: Windows local-run guide (README + setup script) — user asked earlier for .exe (web app)
+- P1: (in progress notes) split server.py into routers; switch date filtering to Mongo $gte/$lte for scale
+- P2: Phone OTP login for the CLOUD version only (needs Twilio account + keys) — impossible offline
 - P2: SMS/WhatsApp loan reminders (needs Twilio/messaging account)
-- P3: Electron wrapper for standalone Windows desktop app
-- Idea: monthly/date-range reports & profit report (admin-only, uses hidden cost)
+- P3: store cost snapshot on BillItem so back-dated P&L is exact (currently uses current product cost for COGS)
+- Idea: opening cash balance setting so Accounts shows absolute cash-in-hand, not just net flow
 
 ## Notes
 - Daily report date matching uses stored ISO date prefix (UTC), consistent with dashboard.
