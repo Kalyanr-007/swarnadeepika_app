@@ -18,6 +18,16 @@ import {
   DialogTitle,
 } from "../components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
+import {
   Table,
   TableBody,
   TableCell,
@@ -41,6 +51,7 @@ const StockPage = ({ user }) => {
   const [editingProduct, setEditingProduct] = useState(null);
   const [showPurchasePrice, setShowPurchasePrice] = useState(false);
   const [newCategory, setNewCategory] = useState({ name: "", description: "" });
+  const [deleteTarget, setDeleteTarget] = useState(null);
 
   const [productForm, setProductForm] = useState({
     name: "",
@@ -120,7 +131,6 @@ const StockPage = ({ user }) => {
   };
 
   const handleDeleteCategory = async (id) => {
-    if (!window.confirm("Are you sure you want to delete this category?")) return;
     try {
       await axios.delete(`${API}/categories/${id}`);
       toast.success("Category deleted!");
@@ -174,7 +184,6 @@ const StockPage = ({ user }) => {
   };
 
   const handleDeleteProduct = async (id) => {
-    if (!window.confirm("Are you sure you want to delete this product?")) return;
     try {
       await axios.delete(`${API}/products/${id}`);
       toast.success("Product deleted!");
@@ -182,6 +191,16 @@ const StockPage = ({ user }) => {
     } catch (error) {
       toast.error("Failed to delete product");
     }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    if (deleteTarget.type === "product") {
+      await handleDeleteProduct(deleteTarget.id);
+    } else if (deleteTarget.type === "category") {
+      await handleDeleteCategory(deleteTarget.id);
+    }
+    setDeleteTarget(null);
   };
 
   const openEditModal = (product) => {
@@ -280,8 +299,9 @@ const StockPage = ({ user }) => {
           >
             <span>{cat.name}</span>
             <button
-              onClick={() => handleDeleteCategory(cat.id)}
+              onClick={() => setDeleteTarget({ type: "category", id: cat.id, name: cat.name })}
               className="text-slate-400 hover:text-red-500"
+              data-testid={`delete-category-${cat.id}`}
             >
               <Trash2 className="w-3 h-3" />
             </button>
@@ -342,7 +362,8 @@ const StockPage = ({ user }) => {
                       variant="ghost"
                       size="sm"
                       className="text-red-500"
-                      onClick={() => handleDeleteProduct(product.id)}
+                      onClick={() => setDeleteTarget({ type: "product", id: product.id, name: product.name })}
+                      data-testid={`delete-product-${product.id}`}
                     >
                       <Trash2 className="w-4 h-4" />
                     </Button>
@@ -526,6 +547,31 @@ const StockPage = ({ user }) => {
           </Button>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Confirmation */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <AlertDialogContent data-testid="delete-confirm-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete {deleteTarget?.type === "category" ? "Category" : "Product"}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete <span className="font-semibold">{deleteTarget?.name}</span>?
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="delete-cancel-btn">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDelete}
+              className="bg-red-600 hover:bg-red-700"
+              data-testid="delete-confirm-btn"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

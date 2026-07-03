@@ -11,6 +11,16 @@ import {
   DialogTitle,
 } from "../components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
+import {
   Table,
   TableBody,
   TableCell,
@@ -28,6 +38,7 @@ const CustomersPage = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [customerForm, setCustomerForm] = useState({
     name: "",
     village: "",
@@ -90,7 +101,6 @@ const CustomersPage = () => {
   };
 
   const handleDeleteCustomer = async (id) => {
-    if (!window.confirm("Are you sure you want to delete this customer?")) return;
     try {
       await axios.delete(`${API}/customers/${id}`);
       toast.success("Customer deleted!");
@@ -98,6 +108,12 @@ const CustomersPage = () => {
     } catch (error) {
       toast.error("Failed to delete customer");
     }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    await handleDeleteCustomer(deleteTarget.id);
+    setDeleteTarget(null);
   };
 
   const openEditModal = (customer) => {
@@ -183,7 +199,8 @@ const CustomersPage = () => {
                       variant="ghost"
                       size="sm"
                       className="text-red-500"
-                      onClick={() => handleDeleteCustomer(customer.id)}
+                      onClick={() => setDeleteTarget({ id: customer.id, name: customer.name })}
+                      data-testid={`delete-customer-${customer.id}`}
                     >
                       <Trash2 className="w-4 h-4" />
                     </Button>
@@ -255,6 +272,29 @@ const CustomersPage = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Confirmation */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <AlertDialogContent data-testid="delete-confirm-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Customer?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete <span className="font-semibold">{deleteTarget?.name}</span>?
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="delete-cancel-btn">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDelete}
+              className="bg-red-600 hover:bg-red-700"
+              data-testid="delete-confirm-btn"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
