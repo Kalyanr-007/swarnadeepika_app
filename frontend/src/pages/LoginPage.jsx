@@ -4,6 +4,12 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "../components/ui/dialog";
 import { toast } from "sonner";
 import { Store, Eye, EyeOff } from "lucide-react";
 
@@ -15,6 +21,61 @@ const LoginPage = ({ onLogin }) => {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isRegister, setIsRegister] = useState(false);
+
+  // Forgot password flow
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [fpStep, setFpStep] = useState(1);
+  const [fpUsername, setFpUsername] = useState("");
+  const [fpQuestion, setFpQuestion] = useState("");
+  const [fpAnswer, setFpAnswer] = useState("");
+  const [fpCode, setFpCode] = useState("");
+  const [fpNewPw, setFpNewPw] = useState("");
+  const [fpLoading, setFpLoading] = useState(false);
+
+  const openForgot = () => {
+    setForgotOpen(true);
+    setFpStep(1);
+    setFpUsername(username || "");
+    setFpQuestion(""); setFpAnswer(""); setFpCode(""); setFpNewPw("");
+  };
+
+  const handleFpLookup = async () => {
+    if (!fpUsername) return toast.error("Enter your username");
+    setFpLoading(true);
+    try {
+      const res = await axios.get(`${API}/auth/recovery-status`, { params: { username: fpUsername } });
+      if (!res.data.has_recovery) {
+        toast.error("No recovery set up for this account. Set it up in Settings after logging in.");
+        return;
+      }
+      setFpQuestion(res.data.security_question || "");
+      setFpStep(2);
+    } catch (err) {
+      toast.error("Unable to check recovery. Try again.");
+    } finally {
+      setFpLoading(false);
+    }
+  };
+
+  const handleFpReset = async () => {
+    if (!fpAnswer && !fpCode) return toast.error("Enter your answer or recovery code");
+    if (fpNewPw.length < 4) return toast.error("New password must be at least 4 characters");
+    setFpLoading(true);
+    try {
+      await axios.post(`${API}/auth/reset-password`, {
+        username: fpUsername,
+        new_password: fpNewPw,
+        security_answer: fpAnswer || null,
+        recovery_code: fpCode || null,
+      });
+      toast.success("Password reset! Please sign in with your new password.");
+      setForgotOpen(false);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Reset failed");
+    } finally {
+      setFpLoading(false);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -141,6 +202,18 @@ const LoginPage = ({ onLogin }) => {
                     )}
                   </button>
                 </div>
+                {!isRegister && (
+                  <div className="text-right">
+                    <button
+                      type="button"
+                      onClick={openForgot}
+                      className="text-xs text-green-700 hover:text-green-800 font-medium"
+                      data-testid="forgot-password-link"
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
+                )}
               </div>
               <Button
                 type="submit"
@@ -183,6 +256,84 @@ const LoginPage = ({ onLogin }) => {
           </CardContent>
         </Card>
       </div>
+
+      {/* Forgot Password Dialog */}
+      <Dialog open={forgotOpen} onOpenChange={setForgotOpen}>
+        <DialogContent className="max-w-md" data-testid="forgot-password-dialog">
+          <DialogHeader>
+            <DialogTitle>Reset Password</DialogTitle>
+          </DialogHeader>
+          {fpStep === 1 ? (
+            <div className="space-y-4">
+              <p className="text-sm text-slate-500">
+                Enter your username to start recovery.
+              </p>
+              <div>
+                <Label>Username</Label>
+                <Input
+                  value={fpUsername}
+                  onChange={(e) => setFpUsername(e.target.value)}
+                  placeholder="Enter username"
+                  data-testid="fp-username-input"
+                />
+              </div>
+              <Button
+                onClick={handleFpLookup}
+                disabled={fpLoading}
+                className="w-full bg-green-700 hover:bg-green-800"
+                data-testid="fp-continue-btn"
+              >
+                {fpLoading ? "Checking..." : "Continue"}
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {fpQuestion && (
+                <div>
+                  <Label className="text-slate-600">Security Question</Label>
+                  <p className="text-sm font-medium text-slate-800 mt-1">{fpQuestion}</p>
+                  <Input
+                    value={fpAnswer}
+                    onChange={(e) => setFpAnswer(e.target.value)}
+                    placeholder="Your answer"
+                    className="mt-2"
+                    data-testid="fp-answer-input"
+                  />
+                </div>
+              )}
+              <div className="text-center text-xs text-slate-400">— OR —</div>
+              <div>
+                <Label>Recovery Code</Label>
+                <Input
+                  value={fpCode}
+                  onChange={(e) => setFpCode(e.target.value)}
+                  placeholder="SD-XXXX-XXXX-XXXX"
+                  className="font-mono"
+                  data-testid="fp-code-input"
+                />
+              </div>
+              <div className="border-t pt-4">
+                <Label>New Password</Label>
+                <Input
+                  type="password"
+                  value={fpNewPw}
+                  onChange={(e) => setFpNewPw(e.target.value)}
+                  placeholder="Enter new password"
+                  data-testid="fp-new-password-input"
+                />
+              </div>
+              <Button
+                onClick={handleFpReset}
+                disabled={fpLoading}
+                className="w-full bg-green-700 hover:bg-green-800"
+                data-testid="fp-reset-btn"
+              >
+                {fpLoading ? "Resetting..." : "Reset Password"}
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

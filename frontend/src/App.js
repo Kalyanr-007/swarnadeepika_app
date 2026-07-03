@@ -8,6 +8,10 @@ import StockPage from "./pages/StockPage";
 import CustomersPage from "./pages/CustomersPage";
 import LoansPage from "./pages/LoansPage";
 import ReportsPage from "./pages/ReportsPage";
+import SettingsPage from "./pages/SettingsPage";
+import ExpensesPage from "./pages/ExpensesPage";
+import PurchasesPage from "./pages/PurchasesPage";
+import AccountsPage from "./pages/AccountsPage";
 import Layout from "./components/Layout";
 import { Toaster } from "./components/ui/sonner";
 
@@ -67,7 +71,11 @@ function App() {
                     <Route path="/stock" element={<StockPage user={user} />} />
                     <Route path="/customers" element={<CustomersPage />} />
                     <Route path="/loans" element={<LoansPage />} />
+                    <Route path="/purchases" element={<PurchasesPage />} />
+                    <Route path="/expenses" element={<ExpensesPage />} />
+                    <Route path="/accounts" element={<AccountsPage />} />
                     <Route path="/reports" element={<ReportsPage />} />
+                    <Route path="/settings" element={<SettingsPage user={user} />} />
                   </Routes>
                 </Layout>
               ) : (

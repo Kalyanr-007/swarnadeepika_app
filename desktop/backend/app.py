@@ -69,7 +69,8 @@ def init_db():
             """
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT,
-                role TEXT, created_at TEXT
+                role TEXT, created_at TEXT,
+                security_question TEXT, security_answer_hash TEXT, recovery_code_hash TEXT
             );
             CREATE TABLE IF NOT EXISTS categories (
                 id TEXT PRIMARY KEY, name TEXT, description TEXT, created_at TEXT
@@ -90,6 +91,14 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS loan_payments (
                 id TEXT PRIMARY KEY, bill_id TEXT, amount REAL, payment_date TEXT, notes TEXT
+            );
+            CREATE TABLE IF NOT EXISTS expenses (
+                id TEXT PRIMARY KEY, amount REAL, category TEXT, note TEXT, date TEXT, created_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS purchases (
+                id TEXT PRIMARY KEY, supplier TEXT, product_id TEXT, product_name TEXT,
+                quantity INTEGER, unit TEXT, purchase_price REAL, total_cost REAL,
+                batch_no TEXT, date TEXT, created_at TEXT
             );
             """
         )
@@ -190,6 +199,63 @@ class LoanPaymentCreate(BaseModel):
     notes: str = ""
 
 
+class ChangePasswordRequest(BaseModel):
+    username: str
+    current_password: str
+    new_password: str
+
+
+class ExpenseCreate(BaseModel):
+    amount: float
+    category: str
+    note: Optional[str] = ""
+    date: Optional[str] = None
+
+
+class PurchaseCreate(BaseModel):
+    supplier: Optional[str] = ""
+    product_id: Optional[str] = None
+    product_name: str
+    quantity: int
+    unit: str = "piece"
+    purchase_price: float
+    batch_no: Optional[str] = ""
+    date: Optional[str] = None
+    update_stock: bool = True
+
+
+class SetupRecoveryRequest(BaseModel):
+    username: str
+    current_password: str
+    security_question: str
+    security_answer: str
+
+
+class ResetPasswordRequest(BaseModel):
+    username: str
+    new_password: str
+    security_answer: Optional[str] = None
+    recovery_code: Optional[str] = None
+
+
+def _norm_answer(a):
+    return (a or "").strip().lower()
+
+
+def _gen_recovery_code():
+    raw = uuid.uuid4().hex.upper()
+    return f"SD-{raw[0:4]}-{raw[4:8]}-{raw[8:12]}"
+
+
+def _in_range(iso_date, start, end):
+    d = (iso_date or "")[:10]
+    if start and d < start:
+        return False
+    if end and d > end:
+        return False
+    return True
+
+
 # ---------- App ----------
 app = FastAPI()
 api = APIRouter(prefix="/api")
@@ -231,6 +297,75 @@ def login(credentials: UserLogin):
     if not u or not bcrypt.checkpw(credentials.password.encode(), u["password_hash"].encode()):
         raise HTTPException(401, "Invalid credentials")
     return {"success": True, "user": {"id": u["id"], "username": u["username"], "role": u["role"]}}
+
+
+@api.post("/auth/change-password")
+def change_password(req: ChangePasswordRequest):
+    with get_conn() as conn:
+        u = conn.execute("SELECT * FROM users WHERE username=?", (req.username,)).fetchone()
+    if not u or not bcrypt.checkpw(req.current_password.encode(), u["password_hash"].encode()):
+        raise HTTPException(401, "Current password is incorrect")
+    if len(req.new_password) < 4:
+        raise HTTPException(400, "New password must be at least 4 characters")
+    h = bcrypt.hashpw(req.new_password.encode(), bcrypt.gensalt()).decode()
+    with _lock, get_conn() as conn:
+        conn.execute("UPDATE users SET password_hash=? WHERE username=?", (h, req.username))
+    return {"success": True}
+
+
+@api.post("/auth/setup-recovery")
+def setup_recovery(req: SetupRecoveryRequest):
+    with get_conn() as conn:
+        u = conn.execute("SELECT * FROM users WHERE username=?", (req.username,)).fetchone()
+    if not u or not bcrypt.checkpw(req.current_password.encode(), u["password_hash"].encode()):
+        raise HTTPException(401, "Password is incorrect")
+    ans_hash = bcrypt.hashpw(_norm_answer(req.security_answer).encode(), bcrypt.gensalt()).decode()
+    code = _gen_recovery_code()
+    code_hash = bcrypt.hashpw(code.encode(), bcrypt.gensalt()).decode()
+    with _lock, get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET security_question=?, security_answer_hash=?, recovery_code_hash=? WHERE username=?",
+            (req.security_question, ans_hash, code_hash, req.username),
+        )
+    return {"success": True, "recovery_code": code}
+
+
+@api.get("/auth/recovery-status")
+def recovery_status(username: str):
+    with get_conn() as conn:
+        u = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+    if not u:
+        return {"has_recovery": False, "security_question": None}
+    return {
+        "has_recovery": bool(u["security_answer_hash"] or u["recovery_code_hash"]),
+        "security_question": u["security_question"],
+    }
+
+
+@api.post("/auth/reset-password")
+def reset_password(req: ResetPasswordRequest):
+    with get_conn() as conn:
+        u = conn.execute("SELECT * FROM users WHERE username=?", (req.username,)).fetchone()
+    if not u:
+        raise HTTPException(401, "Incorrect recovery answer or code")
+    verified = False
+    if req.recovery_code and u["recovery_code_hash"]:
+        if bcrypt.checkpw(req.recovery_code.strip().encode(), u["recovery_code_hash"].encode()):
+            verified = True
+    if not verified and req.security_answer and u["security_answer_hash"]:
+        if bcrypt.checkpw(_norm_answer(req.security_answer).encode(), u["security_answer_hash"].encode()):
+            verified = True
+    if not verified:
+        raise HTTPException(401, "Incorrect recovery answer or code")
+    if len(req.new_password) < 4:
+        raise HTTPException(400, "New password must be at least 4 characters")
+    h = bcrypt.hashpw(req.new_password.encode(), bcrypt.gensalt()).decode()
+    with _lock, get_conn() as conn:
+        if req.recovery_code:
+            conn.execute("UPDATE users SET password_hash=?, recovery_code_hash=NULL WHERE username=?", (h, req.username))
+        else:
+            conn.execute("UPDATE users SET password_hash=? WHERE username=?", (h, req.username))
+    return {"success": True}
 
 
 # --- Categories ---
@@ -557,6 +692,146 @@ def daily_report(date: Optional[str] = None):
             "credit_bills": sum(1 for b in bills if b["payment_type"] == "credit"),
         },
         "items_summary": sorted(item_map.values(), key=lambda x: x["amount"], reverse=True),
+    }
+
+
+# --- Expenses ---
+@api.post("/expenses")
+def create_expense(e: ExpenseCreate):
+    obj = {
+        "id": new_id(), "amount": e.amount, "category": e.category,
+        "note": e.note or "", "date": e.date or now_iso(), "created_at": now_iso(),
+    }
+    with _lock, get_conn() as conn:
+        conn.execute("INSERT INTO expenses (id,amount,category,note,date,created_at) VALUES (:id,:amount,:category,:note,:date,:created_at)", obj)
+    return obj
+
+
+@api.get("/expenses")
+def get_expenses(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    with get_conn() as conn:
+        rows = [dict(r) for r in conn.execute("SELECT * FROM expenses ORDER BY date DESC").fetchall()]
+    if start_date or end_date:
+        rows = [x for x in rows if _in_range(x["date"], start_date, end_date)]
+    return rows
+
+
+@api.delete("/expenses/{expense_id}")
+def delete_expense(expense_id: str):
+    with _lock, get_conn() as conn:
+        cur = conn.execute("DELETE FROM expenses WHERE id=?", (expense_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Expense not found")
+    return {"success": True}
+
+
+# --- Purchases / Stock-in ---
+@api.post("/purchases")
+def create_purchase(p: PurchaseCreate):
+    obj = {
+        "id": new_id(), "supplier": p.supplier or "", "product_id": p.product_id,
+        "product_name": p.product_name, "quantity": p.quantity, "unit": p.unit,
+        "purchase_price": p.purchase_price, "total_cost": p.purchase_price * p.quantity,
+        "batch_no": p.batch_no or "", "date": p.date or now_iso(), "created_at": now_iso(),
+    }
+    with _lock, get_conn() as conn:
+        conn.execute(
+            """INSERT INTO purchases (id,supplier,product_id,product_name,quantity,unit,purchase_price,
+               total_cost,batch_no,date,created_at)
+               VALUES (:id,:supplier,:product_id,:product_name,:quantity,:unit,:purchase_price,
+               :total_cost,:batch_no,:date,:created_at)""", obj)
+        if p.product_id and p.update_stock:
+            conn.execute("UPDATE products SET quantity = quantity + ?, purchase_price = ? WHERE id=?",
+                         (p.quantity, p.purchase_price, p.product_id))
+    return obj
+
+
+@api.get("/purchases")
+def get_purchases(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    with get_conn() as conn:
+        rows = [dict(r) for r in conn.execute("SELECT * FROM purchases ORDER BY date DESC").fetchall()]
+    if start_date or end_date:
+        rows = [x for x in rows if _in_range(x["date"], start_date, end_date)]
+    return rows
+
+
+@api.delete("/purchases/{purchase_id}")
+def delete_purchase(purchase_id: str):
+    with _lock, get_conn() as conn:
+        r = conn.execute("SELECT * FROM purchases WHERE id=?", (purchase_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Purchase not found")
+        conn.execute("DELETE FROM purchases WHERE id=?", (purchase_id,))
+        if r["product_id"]:
+            conn.execute("UPDATE products SET quantity = quantity - ? WHERE id=?", (r["quantity"], r["product_id"]))
+    return {"success": True}
+
+
+@api.get("/reports/summary")
+def get_summary(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    start_date = start_date or today
+    end_date = end_date or today
+    with get_conn() as conn:
+        bills = [row_to_bill(r) for r in conn.execute("SELECT * FROM bills").fetchall()]
+        purchases = [dict(r) for r in conn.execute("SELECT * FROM purchases").fetchall()]
+        expenses = [dict(r) for r in conn.execute("SELECT * FROM expenses").fetchall()]
+        payments = [dict(r) for r in conn.execute("SELECT * FROM loan_payments").fetchall()]
+        products = [dict(r) for r in conn.execute("SELECT * FROM products").fetchall()]
+    bills = [b for b in bills if _in_range(b["date"], start_date, end_date)]
+    purchases = [p for p in purchases if _in_range(p["date"], start_date, end_date)]
+    expenses = [e for e in expenses if _in_range(e["date"], start_date, end_date)]
+    payments = [p for p in payments if _in_range(p["payment_date"], start_date, end_date)]
+    cost_by_id = {p["id"]: p.get("purchase_price", 0) for p in products}
+
+    total_sales = sum(b["total_amount"] for b in bills)
+    cash_received = sum(b["paid_amount"] for b in bills)
+    credit_given = sum(b["balance_amount"] for b in bills)
+    loan_collections = sum(p["amount"] for p in payments)
+    total_purchases = sum(p["total_cost"] for p in purchases)
+    total_expenses = sum(e["amount"] for e in expenses)
+
+    cogs = 0
+    for b in bills:
+        for it in b["items"]:
+            cogs += cost_by_id.get(it.get("product_id"), 0) * it["quantity"]
+    gross_profit = total_sales - cogs
+
+    cash_in = cash_received + loan_collections
+    cash_out = total_purchases + total_expenses
+
+    cat_map = {}
+    for e in expenses:
+        cat_map[e["category"]] = cat_map.get(e["category"], 0) + e["amount"]
+    expenses_by_category = sorted([{"category": k, "amount": v} for k, v in cat_map.items()],
+                                  key=lambda x: x["amount"], reverse=True)
+
+    days = {}
+    def ensure(d):
+        if d not in days:
+            days[d] = {"date": d, "sales": 0, "purchases": 0, "expenses": 0, "cash_in": 0, "cash_out": 0}
+        return days[d]
+    for b in bills:
+        x = ensure(b["date"][:10]); x["sales"] += b["total_amount"]; x["cash_in"] += b["paid_amount"]
+    for p in payments:
+        ensure(p["payment_date"][:10])["cash_in"] += p["amount"]
+    for p in purchases:
+        x = ensure(p["date"][:10]); x["purchases"] += p["total_cost"]; x["cash_out"] += p["total_cost"]
+    for e in expenses:
+        x = ensure(e["date"][:10]); x["expenses"] += e["amount"]; x["cash_out"] += e["amount"]
+    for x in days.values():
+        x["net_cash"] = x["cash_in"] - x["cash_out"]
+    daily = sorted(days.values(), key=lambda x: x["date"])
+
+    return {
+        "period": {"start": start_date, "end": end_date},
+        "sales": {"total": total_sales, "count": len(bills), "cash_received": cash_received, "credit_given": credit_given},
+        "purchases": {"total": total_purchases, "count": len(purchases)},
+        "expenses": {"total": total_expenses, "count": len(expenses), "by_category": expenses_by_category},
+        "loan_collections": loan_collections,
+        "profit": {"revenue": total_sales, "cogs": cogs, "gross_profit": gross_profit, "net_profit": gross_profit - total_expenses},
+        "cash_flow": {"inflow": cash_in, "outflow": cash_out, "net": cash_in - cash_out},
+        "daily": daily,
     }
 
 

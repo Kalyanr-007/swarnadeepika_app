@@ -7,7 +7,11 @@ import {
   CreditCard, 
   LogOut,
   Store,
-  ClipboardList
+  ClipboardList,
+  Settings,
+  Truck,
+  Wallet,
+  LineChart
 } from "lucide-react";
 import { Button } from "./ui/button";
 
@@ -16,9 +20,13 @@ const Layout = ({ children, user, onLogout }) => {
     { path: "/", icon: LayoutDashboard, label: "డాష్‌బోర్డ్", labelEn: "Dashboard" },
     { path: "/billing", icon: Receipt, label: "బిల్లింగ్", labelEn: "Billing" },
     { path: "/stock", icon: Package, label: "స్టాక్", labelEn: "Stock" },
+    { path: "/purchases", icon: Truck, label: "కొనుగోళ్లు", labelEn: "Purchases" },
     { path: "/customers", icon: Users, label: "కస్టమర్లు", labelEn: "Customers" },
     { path: "/loans", icon: CreditCard, label: "అప్పులు", labelEn: "Loans" },
+    { path: "/expenses", icon: Wallet, label: "ఖర్చులు", labelEn: "Expenses" },
     { path: "/reports", icon: ClipboardList, label: "నివేదిక", labelEn: "Reports" },
+    { path: "/accounts", icon: LineChart, label: "ఖాతాలు", labelEn: "Accounts" },
+    { path: "/settings", icon: Settings, label: "సెట్టింగ్‌లు", labelEn: "Settings" },
   ];
 
   return (
@@ -41,7 +49,7 @@ const Layout = ({ children, user, onLogout }) => {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 p-3 space-y-1">
+        <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
           {navItems.map((item) => (
             <NavLink
               key={item.path}

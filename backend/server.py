@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional
 import uuid
+import secrets
 from datetime import datetime, timezone
 import bcrypt
 
@@ -224,6 +225,91 @@ async def login(credentials: UserLogin):
             "role": user['role']
         }
     }
+
+# ---- Password recovery / change ----
+
+class ChangePasswordRequest(BaseModel):
+    username: str
+    current_password: str
+    new_password: str
+
+class SetupRecoveryRequest(BaseModel):
+    username: str
+    current_password: str
+    security_question: str
+    security_answer: str
+
+class ResetPasswordRequest(BaseModel):
+    username: str
+    new_password: str
+    security_answer: Optional[str] = None
+    recovery_code: Optional[str] = None
+
+def _norm_answer(a: Optional[str]) -> str:
+    return (a or "").strip().lower()
+
+def _gen_recovery_code() -> str:
+    raw = secrets.token_hex(6).upper()
+    return f"SD-{raw[0:4]}-{raw[4:8]}-{raw[8:12]}"
+
+@api_router.post("/auth/change-password")
+async def change_password(req: ChangePasswordRequest):
+    user = await db.users.find_one({"username": req.username})
+    if not user or not bcrypt.checkpw(req.current_password.encode(), user['password_hash'].encode()):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    if len(req.new_password) < 4:
+        raise HTTPException(status_code=400, detail="New password must be at least 4 characters")
+    new_hash = bcrypt.hashpw(req.new_password.encode(), bcrypt.gensalt()).decode()
+    await db.users.update_one({"username": req.username}, {"$set": {"password_hash": new_hash}})
+    return {"success": True}
+
+@api_router.post("/auth/setup-recovery")
+async def setup_recovery(req: SetupRecoveryRequest):
+    user = await db.users.find_one({"username": req.username})
+    if not user or not bcrypt.checkpw(req.current_password.encode(), user['password_hash'].encode()):
+        raise HTTPException(status_code=401, detail="Password is incorrect")
+    ans_hash = bcrypt.hashpw(_norm_answer(req.security_answer).encode(), bcrypt.gensalt()).decode()
+    code = _gen_recovery_code()
+    code_hash = bcrypt.hashpw(code.encode(), bcrypt.gensalt()).decode()
+    await db.users.update_one({"username": req.username}, {"$set": {
+        "security_question": req.security_question,
+        "security_answer_hash": ans_hash,
+        "recovery_code_hash": code_hash,
+    }})
+    return {"success": True, "recovery_code": code}
+
+@api_router.get("/auth/recovery-status")
+async def recovery_status(username: str):
+    user = await db.users.find_one({"username": username})
+    if not user:
+        return {"has_recovery": False, "security_question": None}
+    return {
+        "has_recovery": bool(user.get("security_answer_hash") or user.get("recovery_code_hash")),
+        "security_question": user.get("security_question"),
+    }
+
+@api_router.post("/auth/reset-password")
+async def reset_password(req: ResetPasswordRequest):
+    user = await db.users.find_one({"username": req.username})
+    if not user:
+        raise HTTPException(status_code=401, detail="Incorrect recovery answer or code")
+    verified = False
+    if req.recovery_code and user.get("recovery_code_hash"):
+        if bcrypt.checkpw(req.recovery_code.strip().encode(), user["recovery_code_hash"].encode()):
+            verified = True
+    if not verified and req.security_answer and user.get("security_answer_hash"):
+        if bcrypt.checkpw(_norm_answer(req.security_answer).encode(), user["security_answer_hash"].encode()):
+            verified = True
+    if not verified:
+        raise HTTPException(status_code=401, detail="Incorrect recovery answer or code")
+    if len(req.new_password) < 4:
+        raise HTTPException(status_code=400, detail="New password must be at least 4 characters")
+    new_hash = bcrypt.hashpw(req.new_password.encode(), bcrypt.gensalt()).decode()
+    update = {"password_hash": new_hash}
+    if req.recovery_code:
+        update["recovery_code_hash"] = None
+    await db.users.update_one({"username": req.username}, {"$set": update})
+    return {"success": True}
 
 # ==================== CATEGORY ENDPOINTS ====================
 
@@ -477,6 +563,166 @@ async def get_customer_loans(customer_id: str):
     
     total_pending = sum(b['balance_amount'] for b in bills)
     return {"bills": bills, "total_pending": total_pending}
+
+# ==================== EXPENSES / PURCHASES / ACCOUNTS ====================
+
+def _in_range(iso_date, start, end):
+    d = (iso_date or "")[:10]
+    if start and d < start:
+        return False
+    if end and d > end:
+        return False
+    return True
+
+class ExpenseCreate(BaseModel):
+    amount: float
+    category: str
+    note: Optional[str] = ""
+    date: Optional[str] = None
+
+class PurchaseCreate(BaseModel):
+    supplier: Optional[str] = ""
+    product_id: Optional[str] = None
+    product_name: str
+    quantity: int
+    unit: str = "piece"
+    purchase_price: float
+    batch_no: Optional[str] = ""
+    date: Optional[str] = None
+    update_stock: bool = True
+
+@api_router.post("/expenses")
+async def create_expense(e: ExpenseCreate):
+    obj = {
+        "id": str(uuid.uuid4()),
+        "amount": e.amount,
+        "category": e.category,
+        "note": e.note or "",
+        "date": e.date or datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.expenses.insert_one(dict(obj))
+    return obj
+
+@api_router.get("/expenses")
+async def get_expenses(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    items = await db.expenses.find({}, {"_id": 0}).sort("date", -1).to_list(2000)
+    if start_date or end_date:
+        items = [x for x in items if _in_range(x["date"], start_date, end_date)]
+    return items
+
+@api_router.delete("/expenses/{expense_id}")
+async def delete_expense(expense_id: str):
+    r = await db.expenses.delete_one({"id": expense_id})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    return {"success": True}
+
+@api_router.post("/purchases")
+async def create_purchase(p: PurchaseCreate):
+    obj = {
+        "id": str(uuid.uuid4()),
+        "supplier": p.supplier or "",
+        "product_id": p.product_id,
+        "product_name": p.product_name,
+        "quantity": p.quantity,
+        "unit": p.unit,
+        "purchase_price": p.purchase_price,
+        "total_cost": p.purchase_price * p.quantity,
+        "batch_no": p.batch_no or "",
+        "date": p.date or datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.purchases.insert_one(dict(obj))
+    if p.product_id and p.update_stock:
+        await db.products.update_one(
+            {"id": p.product_id},
+            {"$inc": {"quantity": p.quantity}, "$set": {"purchase_price": p.purchase_price}},
+        )
+    return obj
+
+@api_router.get("/purchases")
+async def get_purchases(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    items = await db.purchases.find({}, {"_id": 0}).sort("date", -1).to_list(2000)
+    if start_date or end_date:
+        items = [x for x in items if _in_range(x["date"], start_date, end_date)]
+    return items
+
+@api_router.delete("/purchases/{purchase_id}")
+async def delete_purchase(purchase_id: str):
+    purchase = await db.purchases.find_one({"id": purchase_id}, {"_id": 0})
+    if not purchase:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+    await db.purchases.delete_one({"id": purchase_id})
+    if purchase.get("product_id"):
+        await db.products.update_one({"id": purchase["product_id"]}, {"$inc": {"quantity": -purchase["quantity"]}})
+    return {"success": True}
+
+@api_router.get("/reports/summary")
+async def get_summary(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    start_date = start_date or today
+    end_date = end_date or today
+
+    bills = [b for b in await db.bills.find({}, {"_id": 0}).to_list(5000) if _in_range(b["date"], start_date, end_date)]
+    purchases = [p for p in await db.purchases.find({}, {"_id": 0}).to_list(5000) if _in_range(p["date"], start_date, end_date)]
+    expenses = [e for e in await db.expenses.find({}, {"_id": 0}).to_list(5000) if _in_range(e["date"], start_date, end_date)]
+    payments = [p for p in await db.loan_payments.find({}, {"_id": 0}).to_list(5000) if _in_range(p["payment_date"], start_date, end_date)]
+    products = await db.products.find({}, {"_id": 0}).to_list(5000)
+    cost_by_id = {p["id"]: p.get("purchase_price", 0) for p in products}
+
+    total_sales = sum(b["total_amount"] for b in bills)
+    cash_received = sum(b["paid_amount"] for b in bills)
+    credit_given = sum(b["balance_amount"] for b in bills)
+    loan_collections = sum(p["amount"] for p in payments)
+    total_purchases = sum(p["total_cost"] for p in purchases)
+    total_expenses = sum(e["amount"] for e in expenses)
+
+    cogs = 0
+    for b in bills:
+        for it in b["items"]:
+            cogs += cost_by_id.get(it.get("product_id"), 0) * it["quantity"]
+    gross_profit = total_sales - cogs
+    net_profit = gross_profit - total_expenses
+
+    cash_in = cash_received + loan_collections
+    cash_out = total_purchases + total_expenses
+
+    cat_map = {}
+    for e in expenses:
+        cat_map[e["category"]] = cat_map.get(e["category"], 0) + e["amount"]
+    expenses_by_category = sorted(
+        [{"category": k, "amount": v} for k, v in cat_map.items()],
+        key=lambda x: x["amount"], reverse=True,
+    )
+
+    days = {}
+    def ensure(d):
+        if d not in days:
+            days[d] = {"date": d, "sales": 0, "purchases": 0, "expenses": 0, "cash_in": 0, "cash_out": 0}
+        return days[d]
+    for b in bills:
+        x = ensure(b["date"][:10]); x["sales"] += b["total_amount"]; x["cash_in"] += b["paid_amount"]
+    for p in payments:
+        ensure(p["payment_date"][:10])["cash_in"] += p["amount"]
+    for p in purchases:
+        x = ensure(p["date"][:10]); x["purchases"] += p["total_cost"]; x["cash_out"] += p["total_cost"]
+    for e in expenses:
+        x = ensure(e["date"][:10]); x["expenses"] += e["amount"]; x["cash_out"] += e["amount"]
+    for x in days.values():
+        x["net_cash"] = x["cash_in"] - x["cash_out"]
+    daily = sorted(days.values(), key=lambda x: x["date"])
+
+    return {
+        "period": {"start": start_date, "end": end_date},
+        "sales": {"total": total_sales, "count": len(bills), "cash_received": cash_received, "credit_given": credit_given},
+        "purchases": {"total": total_purchases, "count": len(purchases)},
+        "expenses": {"total": total_expenses, "count": len(expenses), "by_category": expenses_by_category},
+        "loan_collections": loan_collections,
+        "profit": {"revenue": total_sales, "cogs": cogs, "gross_profit": gross_profit, "net_profit": net_profit},
+        "cash_flow": {"inflow": cash_in, "outflow": cash_out, "net": cash_in - cash_out},
+        "daily": daily,
+    }
 
 # ==================== DASHBOARD ENDPOINTS ====================
 
