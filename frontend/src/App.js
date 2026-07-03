@@ -7,6 +7,7 @@ import BillingPage from "./pages/BillingPage";
 import StockPage from "./pages/StockPage";
 import CustomersPage from "./pages/CustomersPage";
 import LoansPage from "./pages/LoansPage";
+import ReportsPage from "./pages/ReportsPage";
 import Layout from "./components/Layout";
 import { Toaster } from "./components/ui/sonner";
 
@@ -66,6 +67,7 @@ function App() {
                     <Route path="/stock" element={<StockPage user={user} />} />
                     <Route path="/customers" element={<CustomersPage />} />
                     <Route path="/loans" element={<LoansPage />} />
+                    <Route path="/reports" element={<ReportsPage />} />
                   </Routes>
                 </Layout>
               ) : (

@@ -526,6 +526,49 @@ async def get_recent_bills():
     bills = await db.bills.find({}, {"_id": 0}).sort("date", -1).to_list(10)
     return bills
 
+# ==================== REPORTS ENDPOINTS ====================
+
+@api_router.get("/reports/daily")
+async def get_daily_report(date: Optional[str] = None):
+    """Daily sales record: who bought, which items, on a given date (YYYY-MM-DD)."""
+    if not date:
+        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    bills = await db.bills.find(
+        {"date": {"$regex": f"^{date}"}}, {"_id": 0}
+    ).sort("bill_no", 1).to_list(1000)
+
+    total_sales = sum(b['total_amount'] for b in bills)
+    total_paid = sum(b['paid_amount'] for b in bills)
+    total_credit = sum(b['balance_amount'] for b in bills)
+    cash_bills = sum(1 for b in bills if b['payment_type'] == 'cash')
+    credit_bills = sum(1 for b in bills if b['payment_type'] == 'credit')
+
+    # Aggregate items sold for the day
+    item_map = {}
+    for b in bills:
+        for it in b['items']:
+            key = it['product_name']
+            if key not in item_map:
+                item_map[key] = {"product_name": key, "unit": it.get('unit', ''), "quantity": 0, "amount": 0}
+            item_map[key]['quantity'] += it['quantity']
+            item_map[key]['amount'] += it['amount']
+    items_summary = sorted(item_map.values(), key=lambda x: x['amount'], reverse=True)
+
+    return {
+        "date": date,
+        "bills": bills,
+        "summary": {
+            "total_sales": total_sales,
+            "total_paid": total_paid,
+            "total_credit": total_credit,
+            "bill_count": len(bills),
+            "cash_bills": cash_bills,
+            "credit_bills": credit_bills,
+        },
+        "items_summary": items_summary,
+    }
+
 # ==================== SHOP INFO ====================
 
 @api_router.get("/shop-info")

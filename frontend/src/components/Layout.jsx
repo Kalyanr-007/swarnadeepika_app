@@ -6,7 +6,8 @@ import {
   Users, 
   CreditCard, 
   LogOut,
-  Store
+  Store,
+  ClipboardList
 } from "lucide-react";
 import { Button } from "./ui/button";
 
@@ -17,6 +18,7 @@ const Layout = ({ children, user, onLogout }) => {
     { path: "/stock", icon: Package, label: "స్టాక్", labelEn: "Stock" },
     { path: "/customers", icon: Users, label: "కస్టమర్లు", labelEn: "Customers" },
     { path: "/loans", icon: CreditCard, label: "అప్పులు", labelEn: "Loans" },
+    { path: "/reports", icon: ClipboardList, label: "నివేదిక", labelEn: "Reports" },
   ];
 
   return (
