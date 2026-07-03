@@ -1,0 +1,609 @@
+"""
+Swarna Deepika — Offline Desktop Backend
+Self-contained FastAPI server backed by SQLite. Also serves the built React UI.
+Used ONLY for the standalone Windows .exe build. The cloud version uses server.py + MongoDB.
+"""
+import os
+import sys
+import json
+import uuid
+import sqlite3
+import threading
+from pathlib import Path
+from datetime import datetime, timezone
+from typing import List, Optional
+
+import bcrypt
+import uvicorn
+from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, ConfigDict
+
+
+# ---------- Paths (work both in dev and inside PyInstaller onefile) ----------
+def resource_dir() -> Path:
+    """Directory containing bundled read-only assets (the built frontend)."""
+    if getattr(sys, "_MEIPASS", None):
+        return Path(sys._MEIPASS)
+    return Path(__file__).parent
+
+
+def data_dir() -> Path:
+    """Writable directory for the SQLite DB. Electron passes SDB_DATA_DIR."""
+    env = os.environ.get("SDB_DATA_DIR")
+    if env:
+        p = Path(env)
+    else:
+        p = Path.home() / "SwarnaDeepika"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+STATIC_DIR = resource_dir() / "static"
+DB_PATH = data_dir() / "swarna_deepika.db"
+PORT = int(os.environ.get("SDB_PORT", "8756"))
+
+_lock = threading.Lock()
+
+
+def get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def new_id():
+    return str(uuid.uuid4())
+
+
+# ---------- Schema ----------
+def init_db():
+    with _lock, get_conn() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT,
+                role TEXT, created_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS categories (
+                id TEXT PRIMARY KEY, name TEXT, description TEXT, created_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS products (
+                id TEXT PRIMARY KEY, name TEXT, name_telugu TEXT, category_id TEXT,
+                batch_no TEXT, mfg_date TEXT, exp_date TEXT, purchase_price REAL,
+                mrp REAL, selling_price REAL, quantity INTEGER, unit TEXT, created_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS customers (
+                id TEXT PRIMARY KEY, name TEXT, village TEXT, phone TEXT,
+                address TEXT, created_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS bills (
+                id TEXT PRIMARY KEY, bill_no INTEGER, customer_id TEXT, customer_name TEXT,
+                village TEXT, items TEXT, total_amount REAL, payment_type TEXT,
+                paid_amount REAL, balance_amount REAL, date TEXT, created_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS loan_payments (
+                id TEXT PRIMARY KEY, bill_id TEXT, amount REAL, payment_date TEXT, notes TEXT
+            );
+            """
+        )
+        # Seed default admin on first run
+        cur = conn.execute("SELECT COUNT(*) AS c FROM users")
+        if cur.fetchone()["c"] == 0:
+            pw = bcrypt.hashpw("swarna123".encode(), bcrypt.gensalt()).decode()
+            conn.execute(
+                "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?,?,?,?,?)",
+                (new_id(), "admin", pw, "admin", now_iso()),
+            )
+
+
+# ---------- Models ----------
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: str = "staff"
+
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+
+class CategoryCreate(BaseModel):
+    name: str
+    description: Optional[str] = ""
+
+
+class ProductCreate(BaseModel):
+    name: str
+    name_telugu: Optional[str] = ""
+    category_id: str
+    batch_no: str
+    mfg_date: str
+    exp_date: str
+    purchase_price: float
+    mrp: float
+    selling_price: float
+    quantity: int
+    unit: str = "piece"
+
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    name_telugu: Optional[str] = None
+    category_id: Optional[str] = None
+    batch_no: Optional[str] = None
+    mfg_date: Optional[str] = None
+    exp_date: Optional[str] = None
+    purchase_price: Optional[float] = None
+    mrp: Optional[float] = None
+    selling_price: Optional[float] = None
+    quantity: Optional[int] = None
+    unit: Optional[str] = None
+
+
+class CustomerCreate(BaseModel):
+    name: str
+    village: str
+    phone: Optional[str] = ""
+    address: Optional[str] = ""
+
+
+class CustomerUpdate(BaseModel):
+    name: Optional[str] = None
+    village: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+
+
+class BillItem(BaseModel):
+    product_id: str
+    product_name: str
+    batch_no: str
+    mfg_date: str
+    exp_date: str
+    quantity: int
+    unit: str
+    rate: float
+    amount: float
+
+
+class BillCreate(BaseModel):
+    customer_id: Optional[str] = None
+    customer_name: str
+    village: str
+    items: List[BillItem]
+    total_amount: float
+    payment_type: str
+    paid_amount: float = 0
+
+
+class LoanPaymentCreate(BaseModel):
+    bill_id: str
+    amount: float
+    notes: str = ""
+
+
+# ---------- App ----------
+app = FastAPI()
+api = APIRouter(prefix="/api")
+
+
+def row_to_product(r, hide_cost=True):
+    d = dict(r)
+    if hide_cost:
+        d.pop("purchase_price", None)
+    return d
+
+
+def row_to_bill(r):
+    d = dict(r)
+    d["items"] = json.loads(d["items"]) if d.get("items") else []
+    return d
+
+
+# --- Auth ---
+@api.post("/auth/register")
+def register(user: UserCreate):
+    with _lock, get_conn() as conn:
+        exists = conn.execute("SELECT 1 FROM users WHERE username=?", (user.username,)).fetchone()
+        if exists:
+            raise HTTPException(400, "Username already exists")
+        h = bcrypt.hashpw(user.password.encode(), bcrypt.gensalt()).decode()
+        uid = new_id()
+        conn.execute(
+            "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?,?,?,?,?)",
+            (uid, user.username, h, user.role, now_iso()),
+        )
+    return {"id": uid, "username": user.username, "role": user.role}
+
+
+@api.post("/auth/login")
+def login(credentials: UserLogin):
+    with get_conn() as conn:
+        u = conn.execute("SELECT * FROM users WHERE username=?", (credentials.username,)).fetchone()
+    if not u or not bcrypt.checkpw(credentials.password.encode(), u["password_hash"].encode()):
+        raise HTTPException(401, "Invalid credentials")
+    return {"success": True, "user": {"id": u["id"], "username": u["username"], "role": u["role"]}}
+
+
+# --- Categories ---
+@api.post("/categories")
+def create_category(c: CategoryCreate):
+    obj = {"id": new_id(), "name": c.name, "description": c.description or "", "created_at": now_iso()}
+    with _lock, get_conn() as conn:
+        conn.execute("INSERT INTO categories (id,name,description,created_at) VALUES (?,?,?,?)",
+                     (obj["id"], obj["name"], obj["description"], obj["created_at"]))
+    return obj
+
+
+@api.get("/categories")
+def get_categories():
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM categories").fetchall()]
+
+
+@api.delete("/categories/{category_id}")
+def delete_category(category_id: str):
+    with _lock, get_conn() as conn:
+        cur = conn.execute("DELETE FROM categories WHERE id=?", (category_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Category not found")
+    return {"success": True}
+
+
+# --- Products ---
+@api.post("/products")
+def create_product(p: ProductCreate):
+    obj = p.model_dump()
+    obj["id"] = new_id()
+    obj["created_at"] = now_iso()
+    with _lock, get_conn() as conn:
+        conn.execute(
+            """INSERT INTO products (id,name,name_telugu,category_id,batch_no,mfg_date,exp_date,
+               purchase_price,mrp,selling_price,quantity,unit,created_at)
+               VALUES (:id,:name,:name_telugu,:category_id,:batch_no,:mfg_date,:exp_date,
+               :purchase_price,:mrp,:selling_price,:quantity,:unit,:created_at)""",
+            obj,
+        )
+    return obj
+
+
+@api.get("/products")
+def get_products(category_id: Optional[str] = None, show_hidden: bool = False):
+    q = "SELECT * FROM products"
+    args = ()
+    if category_id:
+        q += " WHERE category_id=?"
+        args = (category_id,)
+    with get_conn() as conn:
+        rows = conn.execute(q, args).fetchall()
+    return [row_to_product(r, hide_cost=not show_hidden) for r in rows]
+
+
+@api.get("/products/admin")
+def get_products_admin(category_id: Optional[str] = None):
+    q = "SELECT * FROM products"
+    args = ()
+    if category_id:
+        q += " WHERE category_id=?"
+        args = (category_id,)
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(q, args).fetchall()]
+
+
+@api.get("/products/{product_id}")
+def get_product(product_id: str):
+    with get_conn() as conn:
+        r = conn.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
+    if not r:
+        raise HTTPException(404, "Product not found")
+    return row_to_product(r, hide_cost=True)
+
+
+@api.put("/products/{product_id}")
+def update_product(product_id: str, p: ProductUpdate):
+    data = {k: v for k, v in p.model_dump().items() if v is not None}
+    if not data:
+        raise HTTPException(400, "No data to update")
+    sets = ", ".join(f"{k}=:{k}" for k in data)
+    data["id"] = product_id
+    with _lock, get_conn() as conn:
+        cur = conn.execute(f"UPDATE products SET {sets} WHERE id=:id", data)
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Product not found")
+        r = conn.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
+    return dict(r)
+
+
+@api.delete("/products/{product_id}")
+def delete_product(product_id: str):
+    with _lock, get_conn() as conn:
+        cur = conn.execute("DELETE FROM products WHERE id=?", (product_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Product not found")
+    return {"success": True}
+
+
+# --- Customers ---
+@api.post("/customers")
+def create_customer(c: CustomerCreate):
+    obj = c.model_dump()
+    obj["id"] = new_id()
+    obj["created_at"] = now_iso()
+    obj["phone"] = obj.get("phone") or ""
+    obj["address"] = obj.get("address") or ""
+    with _lock, get_conn() as conn:
+        conn.execute(
+            "INSERT INTO customers (id,name,village,phone,address,created_at) VALUES (:id,:name,:village,:phone,:address,:created_at)",
+            obj,
+        )
+    return obj
+
+
+@api.get("/customers")
+def get_customers(search: Optional[str] = None):
+    with get_conn() as conn:
+        if search:
+            like = f"%{search}%"
+            rows = conn.execute(
+                "SELECT * FROM customers WHERE name LIKE ? OR village LIKE ? OR phone LIKE ?",
+                (like, like, like),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM customers").fetchall()
+    return [dict(r) for r in rows]
+
+
+@api.get("/customers/{customer_id}")
+def get_customer(customer_id: str):
+    with get_conn() as conn:
+        r = conn.execute("SELECT * FROM customers WHERE id=?", (customer_id,)).fetchone()
+    if not r:
+        raise HTTPException(404, "Customer not found")
+    return dict(r)
+
+
+@api.put("/customers/{customer_id}")
+def update_customer(customer_id: str, c: CustomerUpdate):
+    data = {k: v for k, v in c.model_dump().items() if v is not None}
+    if not data:
+        raise HTTPException(400, "No data to update")
+    sets = ", ".join(f"{k}=:{k}" for k in data)
+    data["id"] = customer_id
+    with _lock, get_conn() as conn:
+        cur = conn.execute(f"UPDATE customers SET {sets} WHERE id=:id", data)
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Customer not found")
+        r = conn.execute("SELECT * FROM customers WHERE id=?", (customer_id,)).fetchone()
+    return dict(r)
+
+
+@api.delete("/customers/{customer_id}")
+def delete_customer(customer_id: str):
+    with _lock, get_conn() as conn:
+        cur = conn.execute("DELETE FROM customers WHERE id=?", (customer_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Customer not found")
+    return {"success": True}
+
+
+# --- Bills ---
+@api.post("/bills")
+def create_bill(bill: BillCreate):
+    with _lock, get_conn() as conn:
+        last = conn.execute("SELECT MAX(bill_no) AS m FROM bills").fetchone()
+        next_no = (last["m"] + 1) if last and last["m"] else 1
+        balance = bill.total_amount - bill.paid_amount
+        obj = {
+            "id": new_id(),
+            "bill_no": next_no,
+            "customer_id": bill.customer_id,
+            "customer_name": bill.customer_name,
+            "village": bill.village,
+            "items": json.dumps([i.model_dump() for i in bill.items]),
+            "total_amount": bill.total_amount,
+            "payment_type": bill.payment_type,
+            "paid_amount": bill.paid_amount,
+            "balance_amount": balance,
+            "date": now_iso(),
+            "created_at": now_iso(),
+        }
+        conn.execute(
+            """INSERT INTO bills (id,bill_no,customer_id,customer_name,village,items,total_amount,
+               payment_type,paid_amount,balance_amount,date,created_at)
+               VALUES (:id,:bill_no,:customer_id,:customer_name,:village,:items,:total_amount,
+               :payment_type,:paid_amount,:balance_amount,:date,:created_at)""",
+            obj,
+        )
+        for it in bill.items:
+            conn.execute("UPDATE products SET quantity = quantity - ? WHERE id=?", (it.quantity, it.product_id))
+    obj["items"] = json.loads(obj["items"])
+    return obj
+
+
+@api.get("/bills")
+def get_bills(payment_type: Optional[str] = None, customer_id: Optional[str] = None,
+              start_date: Optional[str] = None, end_date: Optional[str] = None):
+    clauses, args = [], []
+    if payment_type:
+        clauses.append("payment_type=?"); args.append(payment_type)
+    if customer_id:
+        clauses.append("customer_id=?"); args.append(customer_id)
+    if start_date:
+        clauses.append("date>=?"); args.append(start_date)
+    if end_date:
+        clauses.append("date<=?"); args.append(end_date)
+    q = "SELECT * FROM bills"
+    if clauses:
+        q += " WHERE " + " AND ".join(clauses)
+    q += " ORDER BY bill_no DESC"
+    with get_conn() as conn:
+        rows = conn.execute(q, args).fetchall()
+    return [row_to_bill(r) for r in rows]
+
+
+@api.get("/bills/{bill_id}")
+def get_bill(bill_id: str):
+    with get_conn() as conn:
+        r = conn.execute("SELECT * FROM bills WHERE id=?", (bill_id,)).fetchone()
+    if not r:
+        raise HTTPException(404, "Bill not found")
+    return row_to_bill(r)
+
+
+# --- Loans ---
+@api.get("/loans/pending")
+def pending_loans():
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM bills WHERE balance_amount>0 ORDER BY date DESC").fetchall()
+    return [row_to_bill(r) for r in rows]
+
+
+@api.post("/loans/payment")
+def record_payment(payment: LoanPaymentCreate):
+    with _lock, get_conn() as conn:
+        b = conn.execute("SELECT * FROM bills WHERE id=?", (payment.bill_id,)).fetchone()
+        if not b:
+            raise HTTPException(404, "Bill not found")
+        if payment.amount > b["balance_amount"]:
+            raise HTTPException(400, "Payment amount exceeds balance")
+        new_paid = b["paid_amount"] + payment.amount
+        new_balance = b["total_amount"] - new_paid
+        conn.execute("UPDATE bills SET paid_amount=?, balance_amount=? WHERE id=?",
+                     (new_paid, new_balance, payment.bill_id))
+        obj = {"id": new_id(), "bill_id": payment.bill_id, "amount": payment.amount,
+               "payment_date": now_iso(), "notes": payment.notes}
+        conn.execute("INSERT INTO loan_payments (id,bill_id,amount,payment_date,notes) VALUES (:id,:bill_id,:amount,:payment_date,:notes)", obj)
+    return obj
+
+
+@api.get("/loans/payments/{bill_id}")
+def bill_payments(bill_id: str):
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM loan_payments WHERE bill_id=?", (bill_id,)).fetchall()]
+
+
+@api.get("/loans/customer/{customer_id}")
+def customer_loans(customer_id: str):
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM bills WHERE customer_id=? AND balance_amount>0", (customer_id,)).fetchall()
+    bills = [row_to_bill(r) for r in rows]
+    return {"bills": bills, "total_pending": sum(b["balance_amount"] for b in bills)}
+
+
+# --- Dashboard ---
+@api.get("/dashboard/stats")
+def dashboard_stats():
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        today_bills = [row_to_bill(r) for r in conn.execute("SELECT * FROM bills WHERE date LIKE ?", (today + "%",)).fetchall()]
+        pending = [row_to_bill(r) for r in conn.execute("SELECT * FROM bills WHERE balance_amount>0").fetchall()]
+        low_stock = [dict(r) for r in conn.execute("SELECT * FROM products WHERE quantity<10").fetchall()]
+        total_products = conn.execute("SELECT COUNT(*) AS c FROM products").fetchone()["c"]
+        total_customers = conn.execute("SELECT COUNT(*) AS c FROM customers").fetchone()["c"]
+    return {
+        "today_sales": sum(b["total_amount"] for b in today_bills),
+        "today_cash": sum(b["paid_amount"] for b in today_bills if b["payment_type"] == "cash"),
+        "today_credit": sum(b["total_amount"] - b["paid_amount"] for b in today_bills if b["payment_type"] == "credit"),
+        "total_pending_loans": sum(b["balance_amount"] for b in pending),
+        "pending_loan_count": len(pending),
+        "low_stock_items": low_stock,
+        "low_stock_count": len(low_stock),
+        "total_products": total_products,
+        "total_customers": total_customers,
+        "total_bills_today": len(today_bills),
+    }
+
+
+@api.get("/dashboard/recent-bills")
+def recent_bills():
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM bills ORDER BY date DESC LIMIT 10").fetchall()
+    return [row_to_bill(r) for r in rows]
+
+
+# --- Reports ---
+@api.get("/reports/daily")
+def daily_report(date: Optional[str] = None):
+    if not date:
+        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM bills WHERE date LIKE ? ORDER BY bill_no ASC", (date + "%",)).fetchall()
+    bills = [row_to_bill(r) for r in rows]
+    item_map = {}
+    for b in bills:
+        for it in b["items"]:
+            k = it["product_name"]
+            if k not in item_map:
+                item_map[k] = {"product_name": k, "unit": it.get("unit", ""), "quantity": 0, "amount": 0}
+            item_map[k]["quantity"] += it["quantity"]
+            item_map[k]["amount"] += it["amount"]
+    return {
+        "date": date,
+        "bills": bills,
+        "summary": {
+            "total_sales": sum(b["total_amount"] for b in bills),
+            "total_paid": sum(b["paid_amount"] for b in bills),
+            "total_credit": sum(b["balance_amount"] for b in bills),
+            "bill_count": len(bills),
+            "cash_bills": sum(1 for b in bills if b["payment_type"] == "cash"),
+            "credit_bills": sum(1 for b in bills if b["payment_type"] == "credit"),
+        },
+        "items_summary": sorted(item_map.values(), key=lambda x: x["amount"], reverse=True),
+    }
+
+
+# --- Shop info ---
+@api.get("/shop-info")
+def shop_info():
+    return {
+        "name_english": "Swarna Deepika Fertilizers, Pesticides & Seeds",
+        "name_telugu": "స్వర్ణదీపిక ఫర్టిలైజర్స్, పెస్టిసైడ్స్ & సీడ్స్",
+        "address": "గ్రా॥ గంగారం, మం॥ కాటారం, జి॥ జయశంకర్ భూపాలపల్లి",
+        "gstin": "36ASSPB9955F1Z8",
+        "pl_no": "P/III/JSK/59/2023",
+        "phone1": "9010067297",
+        "phone2": "9347861548",
+    }
+
+
+@api.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+app.include_router(api)
+app.add_middleware(
+    CORSMiddleware, allow_credentials=True, allow_origins=["*"],
+    allow_methods=["*"], allow_headers=["*"],
+)
+
+
+# --- Serve built React frontend (SPA) ---
+if (STATIC_DIR / "static").exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR / "static")), name="assets")
+
+
+@app.get("/{full_path:path}")
+def spa(full_path: str):
+    if full_path.startswith("api"):
+        raise HTTPException(404, "Not found")
+    candidate = STATIC_DIR / full_path
+    if full_path and candidate.is_file():
+        return FileResponse(str(candidate))
+    index = STATIC_DIR / "index.html"
+    if index.is_file():
+        return FileResponse(str(index))
+    return {"message": "Swarna Deepika Desktop API. Frontend build not bundled."}
+
+
+if __name__ == "__main__":
+    init_db()
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

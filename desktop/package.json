@@ -1,0 +1,42 @@
+{
+  "name": "swarna-deepika-desktop",
+  "version": "1.0.0",
+  "description": "Swarna Deepika Fertilizers - Offline Billing Desktop App",
+  "main": "main.js",
+  "author": "Swarna Deepika",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.swarnadeepika.billing",
+    "productName": "Swarna Deepika Billing",
+    "files": [
+      "main.js"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/backend",
+        "to": "backend"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Swarna Deepika Billing"
+    }
+  }
+}
