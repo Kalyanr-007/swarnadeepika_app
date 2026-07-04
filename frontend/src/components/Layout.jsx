@@ -20,6 +20,7 @@ import {
   EyeOff,
   ShieldAlert,
   Calculator as CalculatorIcon,
+  Undo2,
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
@@ -57,6 +58,7 @@ const NAV_SECTIONS = [
     private: true,
     items: [
       { path: "/purchases", icon: Truck, label: "కొనుగోళ్లు", labelEn: "Purchases" },
+      { path: "/returns", icon: Undo2, label: "రిటర్న్స్", labelEn: "Returns" },
       { path: "/suppliers", icon: Handshake, label: "సప్లయర్లు", labelEn: "Suppliers" },
       { path: "/expenses", icon: Wallet, label: "ఖర్చులు", labelEn: "Expenses" },
     ],

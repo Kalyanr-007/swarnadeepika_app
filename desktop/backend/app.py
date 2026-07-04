@@ -106,6 +106,11 @@ def init_db():
                 quantity INTEGER, unit TEXT, purchase_price REAL, total_cost REAL,
                 batch_no TEXT, date TEXT, created_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS purchase_returns (
+                id TEXT PRIMARY KEY, supplier TEXT, product_id TEXT, product_name TEXT,
+                quantity INTEGER, unit TEXT, return_price REAL, total_refund REAL,
+                batch_no TEXT, date TEXT, created_at TEXT
+            );
             """
         )
         # Seed default admin on first run
@@ -232,6 +237,18 @@ class PurchaseCreate(BaseModel):
     quantity: int
     unit: str = "piece"
     purchase_price: float
+    batch_no: Optional[str] = ""
+    date: Optional[str] = None
+    update_stock: bool = True
+
+
+class PurchaseReturnCreate(BaseModel):
+    supplier: Optional[str] = ""
+    product_id: Optional[str] = None
+    product_name: str
+    quantity: int
+    unit: str = "piece"
+    return_price: float
     batch_no: Optional[str] = ""
     date: Optional[str] = None
     update_stock: bool = True
@@ -783,6 +800,48 @@ def delete_purchase(purchase_id: str):
     return {"success": True}
 
 
+# --- Purchase Returns ---
+@api.post("/purchase-returns")
+def create_purchase_return(p: PurchaseReturnCreate):
+    obj = {
+        "id": new_id(), "supplier": p.supplier or "", "product_id": p.product_id,
+        "product_name": p.product_name, "quantity": p.quantity, "unit": p.unit,
+        "return_price": p.return_price, "total_refund": p.return_price * p.quantity,
+        "batch_no": p.batch_no or "", "date": p.date or now_iso(), "created_at": now_iso(),
+    }
+    with _lock, get_conn() as conn:
+        conn.execute(
+            """INSERT INTO purchase_returns (id,supplier,product_id,product_name,quantity,unit,return_price,
+               total_refund,batch_no,date,created_at)
+               VALUES (:id,:supplier,:product_id,:product_name,:quantity,:unit,:return_price,
+               :total_refund,:batch_no,:date,:created_at)""", obj)
+        if p.product_id and p.update_stock:
+            conn.execute("UPDATE products SET quantity = quantity - ? WHERE id=?",
+                         (p.quantity, p.product_id))
+    return obj
+
+
+@api.get("/purchase-returns")
+def get_purchase_returns(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    with get_conn() as conn:
+        rows = [dict(r) for r in conn.execute("SELECT * FROM purchase_returns ORDER BY date DESC").fetchall()]
+    if start_date or end_date:
+        rows = [x for x in rows if _in_range(x["date"], start_date, end_date)]
+    return rows
+
+
+@api.delete("/purchase-returns/{return_id}")
+def delete_purchase_return(return_id: str):
+    with _lock, get_conn() as conn:
+        r = conn.execute("SELECT * FROM purchase_returns WHERE id=?", (return_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Return not found")
+        conn.execute("DELETE FROM purchase_returns WHERE id=?", (return_id,))
+        if r["product_id"]:
+            conn.execute("UPDATE products SET quantity = quantity + ? WHERE id=?", (r["quantity"], r["product_id"]))
+    return {"success": True}
+
+
 @api.get("/reports/summary")
 def get_summary(start_date: Optional[str] = None, end_date: Optional[str] = None):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -794,10 +853,12 @@ def get_summary(start_date: Optional[str] = None, end_date: Optional[str] = None
         expenses = [dict(r) for r in conn.execute("SELECT * FROM expenses").fetchall()]
         payments = [dict(r) for r in conn.execute("SELECT * FROM loan_payments").fetchall()]
         products = [dict(r) for r in conn.execute("SELECT * FROM products").fetchall()]
+        returns = [dict(r) for r in conn.execute("SELECT * FROM purchase_returns").fetchall()]
     bills = [b for b in bills if _in_range(b["date"], start_date, end_date)]
     purchases = [p for p in purchases if _in_range(p["date"], start_date, end_date)]
     expenses = [e for e in expenses if _in_range(e["date"], start_date, end_date)]
     payments = [p for p in payments if _in_range(p["payment_date"], start_date, end_date)]
+    returns = [r for r in returns if _in_range(r["date"], start_date, end_date)]
     cost_by_id = {p["id"]: p.get("purchase_price", 0) for p in products}
 
     total_sales = sum(b["total_amount"] for b in bills)
@@ -806,6 +867,7 @@ def get_summary(start_date: Optional[str] = None, end_date: Optional[str] = None
     loan_collections = sum(p["amount"] for p in payments)
     total_purchases = sum(p["total_cost"] for p in purchases)
     total_expenses = sum(e["amount"] for e in expenses)
+    total_refunds = sum(r["total_refund"] for r in returns)
 
     cogs = 0
     for b in bills:
@@ -813,7 +875,7 @@ def get_summary(start_date: Optional[str] = None, end_date: Optional[str] = None
             cogs += cost_by_id.get(it.get("product_id"), 0) * it["quantity"]
     gross_profit = total_sales - cogs
 
-    cash_in = cash_received + loan_collections
+    cash_in = cash_received + loan_collections + total_refunds
     cash_out = total_purchases + total_expenses
 
     cat_map = {}
@@ -825,7 +887,7 @@ def get_summary(start_date: Optional[str] = None, end_date: Optional[str] = None
     days = {}
     def ensure(d):
         if d not in days:
-            days[d] = {"date": d, "sales": 0, "purchases": 0, "expenses": 0, "cash_in": 0, "cash_out": 0}
+            days[d] = {"date": d, "sales": 0, "purchases": 0, "expenses": 0, "cash_in": 0, "cash_out": 0, "returns": 0}
         return days[d]
     for b in bills:
         x = ensure(b["date"][:10]); x["sales"] += b["total_amount"]; x["cash_in"] += b["paid_amount"]
@@ -835,6 +897,8 @@ def get_summary(start_date: Optional[str] = None, end_date: Optional[str] = None
         x = ensure(p["date"][:10]); x["purchases"] += p["total_cost"]; x["cash_out"] += p["total_cost"]
     for e in expenses:
         x = ensure(e["date"][:10]); x["expenses"] += e["amount"]; x["cash_out"] += e["amount"]
+    for r in returns:
+        x = ensure(r["date"][:10]); x["returns"] += r["total_refund"]; x["cash_in"] += r["total_refund"]
     for x in days.values():
         x["net_cash"] = x["cash_in"] - x["cash_out"]
     daily = sorted(days.values(), key=lambda x: x["date"])
@@ -843,6 +907,7 @@ def get_summary(start_date: Optional[str] = None, end_date: Optional[str] = None
         "period": {"start": start_date, "end": end_date},
         "sales": {"total": total_sales, "count": len(bills), "cash_received": cash_received, "credit_given": credit_given},
         "purchases": {"total": total_purchases, "count": len(purchases)},
+        "purchase_returns": {"total": total_refunds, "count": len(returns)},
         "expenses": {"total": total_expenses, "count": len(expenses), "by_category": expenses_by_category},
         "loan_collections": loan_collections,
         "profit": {"revenue": total_sales, "cogs": cogs, "gross_profit": gross_profit, "net_profit": gross_profit - total_expenses},
