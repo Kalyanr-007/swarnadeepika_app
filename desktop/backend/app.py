@@ -1019,6 +1019,173 @@ def subsidy_apply(payload: dict):
     return {"applied": applied, "rows": rows}
 
 
+# --- Data Management (info / export / reset auth) ---
+import zipfile
+from fastapi.responses import StreamingResponse
+
+TABLES_TO_EXPORT = [
+    "products", "categories", "customers", "bills",
+    "loan_payments", "expenses", "purchases", "users",
+]
+USER_SAFE_FIELDS = ["id", "username", "role", "created_at"]
+BACKUP_DIR = data_dir() / "backups"
+BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _rows_to_csv_bytes(rows):
+    if not rows:
+        return b""
+    keys = sorted({k for r in rows for k in r.keys()})
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=keys, extrasaction="ignore")
+    w.writeheader()
+    for r in rows:
+        w.writerow({
+            k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict)) else ("" if v is None else v))
+            for k, v in r.items()
+        })
+    return buf.getvalue().encode("utf-8")
+
+
+def _collect_snapshot():
+    """Read every table into (name -> list of dict rows)."""
+    snap = {}
+    with get_conn() as conn:
+        for name in TABLES_TO_EXPORT:
+            try:
+                rows = [dict(r) for r in conn.execute(f"SELECT * FROM {name}").fetchall()]
+            except sqlite3.OperationalError:
+                rows = []
+            if name == "bills":
+                for r in rows:
+                    if isinstance(r.get("items"), str):
+                        try:
+                            r["items"] = json.loads(r["items"])
+                        except Exception:
+                            pass
+            if name == "users":
+                rows = [{k: r.get(k) for k in USER_SAFE_FIELDS} for r in rows]
+            snap[name] = rows
+    return snap
+
+
+def _write_backup_zip():
+    snap = _collect_snapshot()
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    path = BACKUP_DIR / f"backup_{ts}.zip"
+    with zipfile.ZipFile(str(path), "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, rows in snap.items():
+            zf.writestr(f"{name}.csv", _rows_to_csv_bytes(rows))
+        zf.writestr("_metadata.json", json.dumps({
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "counts": {k: len(v) for k, v in snap.items()},
+            "db_path": str(DB_PATH),
+            "note": "Business-data snapshot. Users file excludes password hashes.",
+        }, indent=2))
+    return str(path), path.stat().st_size
+
+
+@api.get("/data/info")
+def data_info():
+    counts = {}
+    with get_conn() as conn:
+        for name in TABLES_TO_EXPORT:
+            try:
+                counts[name] = conn.execute(f"SELECT COUNT(*) AS c FROM {name}").fetchone()["c"]
+            except sqlite3.OperationalError:
+                counts[name] = 0
+    backups = []
+    for p in sorted(BACKUP_DIR.glob("backup_*.zip"), reverse=True)[:10]:
+        st = p.stat()
+        backups.append({
+            "name": p.name, "path": str(p), "size_bytes": st.st_size,
+            "created_at": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+        })
+    return {
+        "backend": "sqlite",
+        "db_path": str(DB_PATH),
+        "data_dir": str(data_dir()),
+        "backup_dir": str(BACKUP_DIR),
+        "counts": counts,
+        "recent_backups": backups,
+    }
+
+
+@api.get("/data/export")
+def data_export():
+    snap = _collect_snapshot()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, rows in snap.items():
+            zf.writestr(f"{name}.csv", _rows_to_csv_bytes(rows))
+        zf.writestr("_metadata.json", json.dumps({
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "counts": {k: len(v) for k, v in snap.items()},
+            "db_path": str(DB_PATH),
+        }, indent=2))
+    buf.seek(0)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    fname = f"swarna_deepika_export_{ts}.zip"
+    return StreamingResponse(
+        buf, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@api.get("/data/backup/download/{name}")
+def download_backup(name: str):
+    if not re.match(r"^backup_[0-9_]+\.zip$", name):
+        raise HTTPException(400, "Invalid backup filename")
+    path = BACKUP_DIR / name
+    if not path.is_file():
+        raise HTTPException(404, "Backup not found")
+    return FileResponse(str(path), media_type="application/zip", filename=name)
+
+
+class ResetAuthRequest(BaseModel):
+    confirm_phrase: str
+    admin_username: str = "admin"
+    admin_password: str
+
+
+CONFIRM_PHRASES = {"RESET AUTH", "reset auth", "RESET-AUTH"}
+
+
+@api.post("/data/reset-auth")
+def reset_auth(req: ResetAuthRequest):
+    if req.confirm_phrase not in CONFIRM_PHRASES:
+        raise HTTPException(400, 'Please type "RESET AUTH" to confirm')
+    with get_conn() as conn:
+        caller = conn.execute("SELECT * FROM users WHERE username=?", (req.admin_username,)).fetchone()
+    if not caller or not bcrypt.checkpw(req.admin_password.encode(), caller["password_hash"].encode()):
+        raise HTTPException(401, "Current admin password is incorrect")
+
+    backup_path, backup_size = _write_backup_zip()
+
+    with _lock, get_conn() as conn:
+        cur = conn.execute("DELETE FROM users")
+        deleted = cur.rowcount
+        hashed = bcrypt.hashpw("swarna123".encode(), bcrypt.gensalt()).decode()
+        conn.execute(
+            "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?,?,?,?,?)",
+            (new_id(), "admin", hashed, "admin", now_iso()),
+        )
+
+    return {
+        "success": True,
+        "backup_file": backup_path,
+        "backup_filename": Path(backup_path).name,
+        "backup_size_bytes": backup_size,
+        "users_deleted": deleted,
+        "reseeded_admin": {"username": "admin", "password": "swarna123"},
+        "message": (
+            f"Backed up ALL data to {backup_path} ({backup_size} bytes). "
+            f"{deleted} user(s) removed. Default admin/swarna123 restored. "
+            f"Business data (products, customers, bills, loans, purchases, expenses) is untouched."
+        ),
+    }
+
+
 # --- Shop info ---
 @api.get("/shop-info")
 def shop_info():

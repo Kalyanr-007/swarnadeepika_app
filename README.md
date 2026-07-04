@@ -1,78 +1,86 @@
 # Swarna Deepika Fertilizers, Pesticides & Seeds — Billing App
 
-Bilingual (Telugu + English) billing / stock / loans app for a fertilizer & pesticide
-shop. Two ways to run it:
+Bilingual (Telugu + English) offline-first billing / stock / loans / accounting
+app for a fertilizer, pesticide & seed shop.
 
-- **Cloud / web version** — React + FastAPI + MongoDB (multi-user)
-- **Offline desktop version** — Same UI, self-contained SQLite backend that runs on
-  a single Windows PC (no internet, no MongoDB, no config)
+- **Windows**: runs 100% offline as a single desktop app (SQLite)
+- **Linux / macOS / EC2**: runs as a web app (FastAPI + MongoDB)
+- One installer script on each OS handles all dependencies automatically.
 
 Default login: **admin / swarna123**
 
 ---
 
-## Quickest way to run locally (offline, one click)
+## One-click setup
 
-The **easiest** local setup uses the offline backend — everything runs from one
-window and data lives in a local SQLite file.
-
-**Prerequisites (install once on the Windows PC):**
-1. **Python 3.10+** — https://www.python.org/downloads/ (tick *Add Python to PATH*)
-2. **Node.js LTS** — https://nodejs.org (includes npm)
-3. **Yarn** — after Node is installed, `run_local.bat` will install it automatically
-   if missing.
-
-**Steps:**
+### Windows
 1. Clone / download this project.
-2. Open the `desktop/` folder in File Explorer.
-3. Double-click **`run_local.bat`**.
-4. The first run takes a few minutes (installs deps + builds the UI). Subsequent
-   runs start in ~5 seconds.
-5. Your browser opens at `http://127.0.0.1:8756`. Login with `admin / swarna123`.
+2. Double-click **`install.bat`** at the root.
+3. That's it — the script auto-installs Python + Node.js + Yarn (via `winget`),
+   builds the UI, and starts the offline backend at `http://127.0.0.1:8756`.
+4. Open your browser (it auto-opens) and login with `admin / swarna123`.
 
-Everything (products, customers, bills, loans) is saved in
-`%USERPROFILE%\SwarnaDeepika\swarna_deepika.db`. Back that file up occasionally.
+Data is stored at `%USERPROFILE%\SwarnaDeepika\swarna_deepika.db`.
 
-Press `Ctrl+C` in the console window to stop the app.
+### Linux / macOS / EC2 (Ubuntu, Debian, Amazon Linux, RHEL, Alpine, Homebrew)
+```bash
+git clone <this repo>
+cd <this repo>
+sudo bash install.sh --prod        # for a server that should be exposed to the internet
+# or
+bash install.sh                    # for local development (dev server on :3000)
+```
+The script auto-detects your package manager (apt / dnf / yum / apk / brew),
+installs Python 3, Node.js 20, Yarn and MongoDB 7, creates the `.env` files
+from templates, builds the frontend, and starts:
 
----
+- **Backend**: `http://<host>:8001/api`
+- **Frontend**: `http://<host>:3000`
+- Logs in `./logs/backend.log`, `./logs/frontend.log`
+- PIDs in `./logs/*.pid` — stop everything with `bash stop.sh`
 
-## Cloud / web version (MongoDB, multi-user)
-
-If you want to run the "cloud" flavour locally for development:
-
-1. Install MongoDB Community and start `mongod`.
-2. Backend env: `cp backend/.env.example backend/.env`  (defaults use
-   `mongodb://localhost:27017`, DB name `swarna_deepika_db`).
-3. Frontend env: `cp frontend/.env.example frontend/.env`
-   (defaults to `REACT_APP_BACKEND_URL=http://localhost:8001`).
-4. Start backend:
-   ```
-   cd backend
-   pip install -r requirements.txt
-   uvicorn server:app --host 0.0.0.0 --port 8001 --reload
-   ```
-5. Start frontend (new terminal):
-   ```
-   cd frontend
-   yarn install
-   yarn start
-   ```
-6. Visit `http://localhost:3000`. An `admin / swarna123` user is auto-seeded on
-   first backend start.
-
-> **Common gotcha:** if you skip step 2/3 and there are no `.env` files, the
-> backend uses safe defaults but the frontend's `REACT_APP_BACKEND_URL` becomes
-> `undefined` — you'll see the UI at :3000 but every "Add stock / customer" call
-> will fail. Copy the example files!
+To make this survive server reboots, add a systemd unit that runs
+`install.sh --prod` after MongoDB comes up (see the `# ---------- Run! ----------`
+block at the bottom of `install.sh` for the exact commands).
 
 ---
 
-## Building the installable Windows .exe
+## Where is data stored?
 
-See `desktop/README.md`. In short: on a Windows PC with the prerequisites above,
-open the `desktop/` folder and run `build.bat` — the installer is produced in
-`desktop/dist/`.
+Open the **Data & Backup** page (sidebar → "Data & Backup" / "డేటా & బ్యాకప్").
+It shows the exact on-disk path of your database and how many rows are in each
+collection.
+
+- **Windows / offline (SQLite)**: single file at
+  `%USERPROFILE%\SwarnaDeepika\swarna_deepika.db` — back it up by copying to a USB drive.
+- **Linux / cloud (MongoDB)**: default `/var/lib/mongodb`. MongoDB writes data to
+  disk continuously and it survives restarts.
+
+All business data (products, categories, customers, bills, loan payments,
+purchases, expenses) is stored permanently and remains available after any
+restart.
+
+### Export data to CSV
+
+Data & Backup page → **"Download ZIP of all data"** creates a single zip file
+containing one CSV per collection (`products.csv`, `customers.csv`, `bills.csv`,
+etc.) plus a `_metadata.json` with row counts and timestamp. Use it for
+backups, reporting, or migration.
+
+### Reset Login Credentials (safe reset)
+
+Data & Backup page → **"Reset Login Credentials…"** — this button:
+
+1. Requires you to type `RESET AUTH` **and** re-enter the admin password.
+2. Automatically creates a **complete backup ZIP** (including current users)
+   on disk before doing anything destructive.
+3. Wipes ONLY the `users` table — every product, customer, bill, loan,
+   purchase, expense stays intact.
+4. Re-seeds the default `admin / swarna123` login so the app is usable again.
+5. Shows you the **exact path** where the backup file was saved and offers to
+   download it right there.
+
+You can also download any earlier server-side backup from the same page.
 
 ---
 
@@ -81,16 +89,44 @@ open the `desktop/` folder and run `build.bat` — the installer is produced in
 - Auth (bcrypt) + security-question / recovery-code password reset (offline)
 - Bilingual UI, printable bills matching traditional Indian bill books
 - Products / Categories CRUD, purchase price hidden except admin endpoint
-- Customers CRUD with Aadhaar (12-digit) support
+- Customers CRUD with **12-digit Aadhaar** support + client-side validation
 - Billing with split payment (Cash + UPI + Credit)
 - Loans (pending list, cash/UPI payment recording, per-customer history)
 - Purchases / Stock-in (with bag size per product)
-- Expenses (free-text categories; Hamali / Labor tracked separately)
+- Expenses with dedicated **Hamali (Labor) Quick Payout** section
 - Accounts — P&L, cash flow, expenses by category
 - **Day Book (Business Health)** — today's cash flow, top-moving items,
   Khata issued vs recovered, month-over-month growth, outstanding market credit,
   and Smart Alerts for products expiring within 60 days + low stock warnings
 - **Government subsidy CSV sync** — paste the daily CSV from the government
-  fertilizer machine (columns: Product Name / Sold (Bags) or Sold (MT)) and it
-  converts MT → bags using each product's Bag Size (kg) and adjusts local stock
+  fertilizer machine (columns: `Product Name / Sold (Bags)` or `Sold (MT)`) and it
+  converts MT → bags using each product's `Bag Size (kg)` and adjusts local stock
+- **Data & Backup** — see storage location, export everything as CSV zip, safe
+  auth-only reset with automatic backup
 - Daily report page with CSV / print
+
+---
+
+## Manual setup (advanced / if the installer failed)
+
+### Cloud / web (MongoDB)
+```bash
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
+
+cd backend && python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+uvicorn server:app --host 0.0.0.0 --port 8001 --reload
+
+# new terminal
+cd frontend && yarn install && yarn start
+```
+
+### Offline desktop (SQLite, Windows)
+```
+cd desktop
+run_local.bat
+```
+
+### Building the installable Windows .exe
+See `desktop/README.md`. Requires Windows + Python + Node + Yarn.

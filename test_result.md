@@ -160,7 +160,22 @@ backend:
     status_history:
         - working: true
           agent: "main"
-          comment: "Fixed 4 bugs: Product INSERT was missing bag_size_kg; Customer INSERT missing aadhaar; Bill INSERT missing cash_amount/upi_amount; loan_payments INSERT missing method. Added /api/reports/day-summary and /api/subsidy/{preview,apply} endpoints. Verified end-to-end via FastAPI TestClient (login, product create with bag_size, customer with aadhaar, split cash/upi bill, subsidy preview, day-summary) — all passing. Not tested through subagent because desktop backend is not run by supervisor."
+          comment: "Fixed 4 bugs: Product INSERT was missing bag_size_kg; Customer INSERT missing aadhaar; Bill INSERT missing cash_amount/upi_amount; loan_payments INSERT missing method. Added /api/reports/day-summary and /api/subsidy/{preview,apply} endpoints. Also added /api/data/{info,export,reset-auth,backup/download/{name}} - verified via TestClient (info shows sqlite backend + db_path, export streams zip, reset-auth backs up + wipes users + re-seeds admin). Not tested through subagent because desktop backend is not run by supervisor."
+
+  - task: "Data Management endpoints (cloud) - info / export / reset-auth / backup-download"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "New endpoints: GET /api/data/info (backend type, mongo_url, db_name, backup_dir, counts, recent_backups); GET /api/data/export (StreamingResponse of ZIP with a CSV per collection - users CSV excludes password_hash); POST /api/data/reset-auth (requires confirm_phrase='RESET AUTH' + admin_password, writes full backup to /app/backend/data/backups/backup_YYYYMMDD_HHMMSS.zip FIRST, then wipes users, then re-seeds admin/swarna123, returns backup path + size + counts); GET /api/data/backup/download/{name} (regex-guarded filename, streams zip from backup dir). Quickly smoke-tested via curl — all 200. Please formally verify with the scenarios in agent_communication above."
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED (54/55 tests, 98.2% success) - All Data Management endpoints working correctly. (1) GET /api/data/info: Returns correct structure with backend='mongodb', db_name='swarna_deepika_db', backup_dir='/app/backend/data/backups', counts for all 8 collections (products, categories, customers, bills, loan_payments, expenses, purchases, users), and recent_backups list. (2) GET /api/data/export: Returns valid ZIP file (Content-Type: application/zip, Content-Disposition with attachment filename swarna_deepika_export_*.zip) containing all required CSVs (products, categories, customers, bills, loan_payments, expenses, purchases, users, _metadata.json). VERIFIED: users.csv does NOT contain password_hash column (security requirement met). _metadata.json is valid JSON with exported_at, collections, db_name keys. (3) POST /api/data/reset-auth: FULL WORKFLOW VERIFIED - Wrong confirm_phrase correctly returns 400, wrong admin password correctly returns 401. Correct request creates backup (backup_20260704_094742.zip, 3253 bytes), returns success=true with backup_file (absolute path /app/backend/data/backups/backup_*.zip), backup_filename, backup_size_bytes>0, users_deleted>=1, reseeded_admin (username=admin, password=swarna123), and message with backup path. CRITICAL VERIFICATION: Business data counts UNCHANGED after reset (products=3, customers=3, bills=6 before and after). Users count correctly changed to 1 (only admin). Login with admin/swarna123 works after reset. (4) GET /api/data/backup/download/{name}: Successfully downloads backup ZIP with valid content (all CSVs present). Nonexistent file correctly returns 404. Minor: Path traversal attempt (../etc/passwd) returns 404 instead of expected 400 - this is acceptable as FastAPI routing blocks it before reaching validation code (security still working). (5) Sanity check: Business operations (create product, customer, bill) all working correctly after reset-auth. All existing endpoints (31 tests) continue to pass. No breaking changes detected."
 
   - task: "Products with bag_size_kg field"
     implemented: true
@@ -235,6 +250,30 @@ frontend:
           agent: "main"
           comment: "Page already exists from previous session (/day-summary route) — no changes this iteration."
 
+  - task: "Data & Backup page (new)"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/pages/DataPage.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "New page /data added to sidebar (Database icon). Shows: backend type, DB location/backup folder, per-collection row counts, Export ZIP button (calls /api/data/export and triggers browser download), Reset Login Credentials with warning + confirm phrase 'RESET AUTH' + admin password gate, backup path shown after reset with download link, list of recent server-side backups with download buttons. Not yet frontend-tested (awaiting user approval)."
+
+  - task: "Hamali (Labor) Quick Payout on Expenses page"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/pages/ExpensesPage.jsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Amber-highlighted card on Expenses page with two fields (amount + optional worker name) that POSTs an expense with category='Hamali' → day-summary hamali_payouts reflects it automatically."
+
   - task: "Billing / Stock / Customer / Loans updates (aadhaar, bag size, cash+upi)"
     implemented: true
     working: "NA"
@@ -245,12 +284,12 @@ frontend:
     status_history:
         - working: "NA"
           agent: "main"
-          comment: "Existing from previous session — no changes this iteration."
+          comment: "Existing from previous session — customers page already validates Aadhaar as exactly 12 digits before submit and forces numeric-only input via .replace(/\\D/g,'').slice(0,12) — no changes needed."
 
 metadata:
   created_by: "main_agent"
   version: "1.2"
-  test_sequence: 2
+  test_sequence: 3
   run_ui: false
 
 test_plan:
@@ -262,5 +301,9 @@ test_plan:
 agent_communication:
     - agent: "main"
       message: "Container .env files were missing → backend was crash-looping (KeyError MONGO_URL) and the frontend at :3000 was calling undefined/api/... (exact match for user's 'nothing works' report). Restored env files + added committed .env.example + safe fallbacks + auto-admin-seed. Also synced the desktop offline backend with day-summary + subsidy CSV endpoints and fixed 4 SQL-INSERT bugs (missing aadhaar / bag_size_kg / cash_amount / upi_amount / method). Please retest cloud API: login (admin/swarna123), product CRUD (with bag_size_kg), customer CRUD (with aadhaar), bill create with cash+upi split, loan payment with method, day-summary shape, subsidy preview+apply."
+    - agent: "main"
+      message: "Iteration 2 additions — please test only the NEW endpoints, existing ones already verified: (1) GET /api/data/info returns backend='mongodb', mongo_url, db_name, backup_dir='/app/backend/data/backups', counts of all 8 collections, and recent_backups list. (2) GET /api/data/export returns HTTP 200 with Content-Type application/zip and Content-Disposition attachment filename swarna_deepika_export_*.zip — the zip should contain products.csv, categories.csv, customers.csv, bills.csv, loan_payments.csv, expenses.csv, purchases.csv, users.csv, _metadata.json. Users CSV must NOT contain a password_hash column. (3) POST /api/data/reset-auth with body {\"confirm_phrase\":\"RESET AUTH\",\"admin_username\":\"admin\",\"admin_password\":\"swarna123\"} should return success=true, backup_file (absolute path), backup_filename, backup_size_bytes, users_deleted (>=1), and reseeded_admin={username:admin,password:swarna123}. After the call, POST /api/auth/login with admin/swarna123 must succeed. (4) Missing confirm_phrase or wrong password should return 400/401 respectively. (5) GET /api/data/backup/download/{filename} should stream the backup zip. (6) Confirm business data (products/customers/bills/etc.) counts are UNCHANGED after reset-auth."
     - agent: "testing"
       message: "✅ ALL BACKEND TESTS PASSED (31/31 - 100% success rate). Comprehensive testing completed covering: (1) Auth with admin/swarna123 ✅, (2) Products with bag_size_kg ✅, (3) Customers with 12-digit Aadhaar ✅, (4) Bills with split Cash+UPI payment ✅, (5) Loan payments with method (cash/upi) ✅, (6) Day Summary endpoint with complete structure ✅, (7) Government subsidy CSV sync (preview + apply with MT→bags conversion) ✅, (8) Regression tests for all existing endpoints ✅. Minor fix applied: Added 'method' field to LoanPayment response model. All features working correctly. Stock management verified. No critical issues found. Ready for production use."
+    - agent: "testing"
+      message: "✅ DATA MANAGEMENT ENDPOINTS TESTED (54/55 tests passed, 98.2% success rate). All 4 new endpoints working correctly: (1) GET /api/data/info ✅ - Returns correct structure with all required keys and collection counts. (2) GET /api/data/export ✅ - Returns valid ZIP with all CSVs, users.csv correctly excludes password_hash, _metadata.json valid. (3) POST /api/data/reset-auth ✅ - Full workflow verified: creates backup, wipes users, re-seeds admin, business data UNCHANGED (products/customers/bills counts identical before/after), login works after reset, negative tests (wrong phrase/password) return correct error codes. (4) GET /api/data/backup/download/{name} ✅ - Downloads valid backup ZIP, nonexistent file returns 404. (5) Sanity check ✅ - Business operations (create product/customer/bill) work after reset. Minor note: Path traversal test returns 404 instead of 400 (FastAPI routing blocks before validation - security still working). TOTAL: 55 tests run (31 existing + 24 new), 54 passed. All critical functionality verified. No breaking changes. Ready for production."

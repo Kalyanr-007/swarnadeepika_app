@@ -1,6 +1,7 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse, FileResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
@@ -12,6 +13,8 @@ import secrets
 import csv
 import io
 import re
+import json
+import zipfile
 from datetime import datetime, timezone
 import bcrypt
 
@@ -1007,6 +1010,172 @@ async def get_daily_report(date: Optional[str] = None):
         },
         "items_summary": items_summary,
     }
+
+# ==================== DATA MANAGEMENT (INFO / EXPORT / RESET AUTH) ====================
+
+BACKUP_DIR = ROOT_DIR / "data" / "backups"
+BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+
+COLLECTIONS_TO_EXPORT = [
+    "products", "categories", "customers", "bills",
+    "loan_payments", "expenses", "purchases", "users",
+]
+
+USER_SAFE_FIELDS = ["id", "username", "role", "created_at"]  # never export password hashes
+
+
+async def _collect_data_snapshot():
+    """Read every business collection into a dict of (collection_name -> list-of-rows)."""
+    snapshot = {}
+    for name in COLLECTIONS_TO_EXPORT:
+        rows = await db[name].find({}, {"_id": 0}).to_list(100000)
+        if name == "users":
+            rows = [{k: r.get(k) for k in USER_SAFE_FIELDS} for r in rows]
+        snapshot[name] = rows
+    return snapshot
+
+
+def _rows_to_csv_bytes(rows):
+    """Serialize a list of dict rows to CSV bytes, flattening nested lists/dicts as JSON strings."""
+    if not rows:
+        return b""
+    keys = sorted({k for r in rows for k in r.keys()})
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=keys, extrasaction="ignore")
+    w.writeheader()
+    for r in rows:
+        w.writerow({
+            k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict)) else ("" if v is None else v))
+            for k, v in r.items()
+        })
+    return buf.getvalue().encode("utf-8")
+
+
+async def _write_backup_zip():
+    """Create a backup zip on disk. Returns (path, size_bytes)."""
+    snapshot = await _collect_data_snapshot()
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    path = BACKUP_DIR / f"backup_{ts}.zip"
+    with zipfile.ZipFile(str(path), "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, rows in snapshot.items():
+            zf.writestr(f"{name}.csv", _rows_to_csv_bytes(rows))
+        zf.writestr("_metadata.json", json.dumps({
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "collections": {k: len(v) for k, v in snapshot.items()},
+            "db_name": db_name,
+            "note": "Business-data snapshot. Users file excludes password hashes.",
+        }, indent=2))
+    return str(path), path.stat().st_size
+
+
+@api_router.get("/data/info")
+async def data_info():
+    """Where is the data stored and how much of it is there?"""
+    counts = {}
+    for name in COLLECTIONS_TO_EXPORT:
+        counts[name] = await db[name].count_documents({})
+    backups = []
+    for p in sorted(BACKUP_DIR.glob("backup_*.zip"), reverse=True)[:10]:
+        st = p.stat()
+        backups.append({
+            "name": p.name,
+            "path": str(p),
+            "size_bytes": st.st_size,
+            "created_at": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+        })
+    return {
+        "backend": "mongodb",
+        "mongo_url": mongo_url,
+        "db_name": db_name,
+        "backup_dir": str(BACKUP_DIR),
+        "counts": counts,
+        "recent_backups": backups,
+    }
+
+
+@api_router.get("/data/export")
+async def data_export():
+    """Download every collection as CSVs bundled in a single zip file."""
+    snapshot = await _collect_data_snapshot()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, rows in snapshot.items():
+            zf.writestr(f"{name}.csv", _rows_to_csv_bytes(rows))
+        zf.writestr("_metadata.json", json.dumps({
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "collections": {k: len(v) for k, v in snapshot.items()},
+            "db_name": db_name,
+        }, indent=2))
+    buf.seek(0)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"swarna_deepika_export_{ts}.zip"
+    return StreamingResponse(
+        buf, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@api_router.get("/data/backup/download/{name}")
+async def download_backup(name: str):
+    """Download an existing on-disk backup zip by filename (for verifying reset backups)."""
+    # Only allow files inside BACKUP_DIR and matching our safe prefix.
+    if not re.match(r"^backup_[0-9_]+\.zip$", name):
+        raise HTTPException(400, "Invalid backup filename")
+    path = BACKUP_DIR / name
+    if not path.is_file():
+        raise HTTPException(404, "Backup not found")
+    return FileResponse(str(path), media_type="application/zip", filename=name)
+
+
+class ResetAuthRequest(BaseModel):
+    confirm_phrase: str  # user must type "RESET AUTH" (or Telugu equivalent) to confirm
+    admin_username: str = "admin"  # who is issuing the reset
+    admin_password: str  # current admin password required
+
+
+CONFIRM_PHRASES = {"RESET AUTH", "reset auth", "RESET-AUTH"}
+
+
+@api_router.post("/data/reset-auth")
+async def reset_auth(req: ResetAuthRequest):
+    """Reset ALL login/auth information. Business data is preserved.
+    Steps: 1) verify caller admin password, 2) full data backup to disk, 3) wipe users
+    collection, 4) re-seed default admin/swarna123. Returns the backup file path so the
+    user knows where their backup lives.
+    """
+    if req.confirm_phrase not in CONFIRM_PHRASES:
+        raise HTTPException(400, 'Please type "RESET AUTH" to confirm')
+
+    caller = await db.users.find_one({"username": req.admin_username})
+    if not caller or not bcrypt.checkpw(req.admin_password.encode(), caller["password_hash"].encode()):
+        raise HTTPException(401, "Current admin password is incorrect")
+
+    # 1. Backup EVERYTHING (including current users) so it's recoverable.
+    backup_path, backup_size = await _write_backup_zip()
+
+    # 2. Wipe users only (business data preserved).
+    deleted = await db.users.delete_many({})
+
+    # 3. Re-seed the default admin so the app remains usable.
+    hashed = bcrypt.hashpw("swarna123".encode(), bcrypt.gensalt()).decode()
+    admin = User(username="admin", role="admin").model_dump()
+    admin["password_hash"] = hashed
+    await db.users.insert_one(admin)
+
+    return {
+        "success": True,
+        "backup_file": backup_path,
+        "backup_filename": Path(backup_path).name,
+        "backup_size_bytes": backup_size,
+        "users_deleted": deleted.deleted_count,
+        "reseeded_admin": {"username": "admin", "password": "swarna123"},
+        "message": (
+            f"Backed up ALL data to {backup_path} ({backup_size} bytes). "
+            f"{deleted.deleted_count} user(s) removed. Default admin/swarna123 restored. "
+            f"Business data (products, customers, bills, loans, purchases, expenses) is untouched."
+        ),
+    }
+
 
 # ==================== SHOP INFO ====================
 

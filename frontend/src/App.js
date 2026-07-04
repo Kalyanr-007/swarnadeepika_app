@@ -13,6 +13,7 @@ import ExpensesPage from "./pages/ExpensesPage";
 import PurchasesPage from "./pages/PurchasesPage";
 import AccountsPage from "./pages/AccountsPage";
 import DaySummaryPage from "./pages/DaySummaryPage";
+import DataPage from "./pages/DataPage";
 import Layout from "./components/Layout";
 import { Toaster } from "./components/ui/sonner";
 
@@ -77,6 +78,7 @@ function App() {
                     <Route path="/expenses" element={<ExpensesPage />} />
                     <Route path="/accounts" element={<AccountsPage />} />
                     <Route path="/reports" element={<ReportsPage />} />
+                    <Route path="/data" element={<DataPage user={user} onLogout={handleLogout} />} />
                     <Route path="/settings" element={<SettingsPage user={user} />} />
                   </Routes>
                 </Layout>

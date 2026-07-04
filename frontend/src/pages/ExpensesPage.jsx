@@ -8,7 +8,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "../components/ui/table";
 import { toast } from "sonner";
-import { Wallet, Plus, Trash2, TrendingDown } from "lucide-react";
+import { Wallet, Plus, Trash2, TrendingDown, HandCoins } from "lucide-react";
 import { format } from "date-fns";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -63,6 +63,30 @@ const ExpensesPage = () => {
     } catch { toast.error("Failed to delete"); }
   };
 
+  const [hamaliAmount, setHamaliAmount] = useState("");
+  const [hamaliWorker, setHamaliWorker] = useState("");
+  const [hamaliSaving, setHamaliSaving] = useState(false);
+
+  const addHamaliPayout = async (e) => {
+    e.preventDefault();
+    const amt = parseFloat(hamaliAmount);
+    if (!amt || amt <= 0) return toast.error("Enter a valid Hamali amount");
+    setHamaliSaving(true);
+    try {
+      await axios.post(`${API}/expenses`, {
+        amount: amt,
+        category: "Hamali",
+        note: hamaliWorker ? `Labor payout - ${hamaliWorker}` : "Labor payout",
+        date: new Date().toISOString(),
+      });
+      toast.success(`Hamali payout of ₹${amt.toLocaleString()} recorded`);
+      setHamaliAmount(""); setHamaliWorker("");
+      fetchExpenses();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to record Hamali payout");
+    } finally { setHamaliSaving(false); }
+  };
+
   const fmtDate = (d) => { try { return format(new Date(d), "dd MMM yyyy"); } catch { return d; } };
 
   return (
@@ -73,8 +97,31 @@ const ExpensesPage = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Add form */}
-        <Card className="lg:col-span-1 h-fit">
+        {/* Add form + Hamali quick-add */}
+        <div className="lg:col-span-1 space-y-4">
+        <Card className="bg-amber-50 border-amber-200" data-testid="hamali-quick-card">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2 text-amber-800">
+              <HandCoins className="w-5 h-5" /> Quick Hamali Payout
+              <span className="font-telugu text-sm text-amber-600">హమాలీ</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={addHamaliPayout} className="space-y-3">
+              <Input type="number" value={hamaliAmount} onChange={(e) => setHamaliAmount(e.target.value)}
+                placeholder="Amount ₹" data-testid="hamali-amount-input" />
+              <Input value={hamaliWorker} onChange={(e) => setHamaliWorker(e.target.value)}
+                placeholder="Worker name (optional)" data-testid="hamali-worker-input" />
+              <Button type="submit" disabled={hamaliSaving}
+                className="w-full bg-amber-600 hover:bg-amber-700"
+                data-testid="add-hamali-btn">
+                {hamaliSaving ? "Saving..." : "Record Hamali Payout"}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+
+        <Card className="h-fit">
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
               <Plus className="w-5 h-5 text-green-700" /> Add Expense
@@ -109,6 +156,7 @@ const ExpensesPage = () => {
             </form>
           </CardContent>
         </Card>
+        </div>
 
         {/* List */}
         <Card className="lg:col-span-2">

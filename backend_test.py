@@ -16,6 +16,8 @@ class SwarnaDeepikaBillingTester:
         self.test_customer_id = None
         self.test_bill_id = None
         self.test_credit_bill_id = None
+        self.initial_counts = {}
+        self.backup_filename = None
 
     def log_test(self, name, success, details=""):
         """Log test result"""
@@ -678,6 +680,491 @@ Urea (45kg),0.225"""
         
         return True
 
+    def test_data_management_info(self):
+        """Test 9: Data Management - GET /api/data/info"""
+        print("\n📊 Test 9: Data Management - GET /api/data/info")
+        
+        success, response = self.run_test(
+            "GET /api/data/info - verify structure",
+            "GET",
+            "data/info",
+            200,
+            validate_fn=lambda r: self.validate_data_info_structure(r)
+        )
+        
+        # Store counts for later comparison after reset-auth
+        if success:
+            self.initial_counts = response.get('counts', {})
+        
+        return success
+
+    def validate_data_info_structure(self, data):
+        """Validate data/info response structure"""
+        required_keys = ['backend', 'mongo_url', 'db_name', 'backup_dir', 'counts', 'recent_backups']
+        
+        for key in required_keys:
+            if key not in data:
+                return (False, f"Missing required key: {key}")
+        
+        # Validate backend type
+        if data['backend'] != 'mongodb':
+            return (False, f"backend should be 'mongodb', got {data['backend']}")
+        
+        # Validate db_name
+        if data['db_name'] != 'swarna_deepika_db':
+            return (False, f"db_name should be 'swarna_deepika_db', got {data['db_name']}")
+        
+        # Validate backup_dir
+        if data['backup_dir'] != '/app/backend/data/backups':
+            return (False, f"backup_dir should be '/app/backend/data/backups', got {data['backup_dir']}")
+        
+        # Validate counts structure
+        expected_collections = ['products', 'categories', 'customers', 'bills', 'loan_payments', 'expenses', 'purchases', 'users']
+        for collection in expected_collections:
+            if collection not in data['counts']:
+                return (False, f"Missing count for collection: {collection}")
+        
+        # Validate recent_backups is a list
+        if not isinstance(data['recent_backups'], list):
+            return (False, "recent_backups should be a list")
+        
+        return (True, "Data info structure is valid")
+
+    def test_data_export(self):
+        """Test 10: Data Management - GET /api/data/export"""
+        print("\n📦 Test 10: Data Management - GET /api/data/export")
+        
+        url = f"{self.base_url}/api/data/export"
+        
+        try:
+            response = requests.get(url, timeout=60)
+            
+            if response.status_code != 200:
+                self.log_test("GET /api/data/export - status code", False, f"Expected 200, got {response.status_code}")
+                return False
+            
+            self.log_test("GET /api/data/export - status code 200", True)
+            
+            # Check Content-Type
+            content_type = response.headers.get('Content-Type', '')
+            if 'application/zip' not in content_type:
+                self.log_test("Content-Type is application/zip", False, f"Expected application/zip, got {content_type}")
+                return False
+            
+            self.log_test("Content-Type is application/zip", True)
+            
+            # Check Content-Disposition
+            content_disposition = response.headers.get('Content-Disposition', '')
+            if 'attachment' not in content_disposition or 'swarna_deepika_export_' not in content_disposition:
+                self.log_test("Content-Disposition has attachment and filename", False, f"Got: {content_disposition}")
+                return False
+            
+            self.log_test("Content-Disposition has attachment and filename", True)
+            
+            # Validate ZIP content
+            import zipfile
+            import io
+            
+            zip_buffer = io.BytesIO(response.content)
+            
+            try:
+                with zipfile.ZipFile(zip_buffer, 'r') as zf:
+                    file_list = zf.namelist()
+                    
+                    # Check required files
+                    required_files = ['products.csv', 'categories.csv', 'customers.csv', 'bills.csv', 
+                                      'loan_payments.csv', 'expenses.csv', 'purchases.csv', 'users.csv', '_metadata.json']
+                    
+                    for required_file in required_files:
+                        if required_file not in file_list:
+                            self.log_test(f"ZIP contains {required_file}", False, f"Missing file: {required_file}")
+                            return False
+                    
+                    self.log_test("ZIP contains all required CSV files", True)
+                    
+                    # Check users.csv does NOT contain password_hash column
+                    users_csv = zf.read('users.csv').decode('utf-8')
+                    if 'password_hash' in users_csv:
+                        self.log_test("users.csv does NOT contain password_hash", False, "Found password_hash column in users.csv")
+                        return False
+                    
+                    self.log_test("users.csv does NOT contain password_hash", True)
+                    
+                    # Validate _metadata.json
+                    metadata_json = zf.read('_metadata.json').decode('utf-8')
+                    metadata = json.loads(metadata_json)
+                    
+                    if 'exported_at' not in metadata or 'collections' not in metadata or 'db_name' not in metadata:
+                        self.log_test("_metadata.json has required keys", False, f"Missing keys in metadata: {metadata.keys()}")
+                        return False
+                    
+                    self.log_test("_metadata.json is valid JSON with required keys", True)
+                    
+            except zipfile.BadZipFile:
+                self.log_test("Response is a valid ZIP file", False, "Invalid ZIP file")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            self.log_test("GET /api/data/export", False, f"Exception: {str(e)}")
+            return False
+
+    def test_data_reset_auth(self):
+        """Test 11: Data Management - POST /api/data/reset-auth"""
+        print("\n🔐 Test 11: Data Management - POST /api/data/reset-auth")
+        
+        # First, get current data counts
+        success, info_response = self.run_test(
+            "Get data info before reset-auth",
+            "GET",
+            "data/info",
+            200
+        )
+        
+        if not success:
+            print("⚠️ Failed to get data info before reset")
+            return False
+        
+        initial_counts = info_response.get('counts', {})
+        print(f"  Initial counts: products={initial_counts.get('products')}, customers={initial_counts.get('customers')}, bills={initial_counts.get('bills')}")
+        
+        # Test negative case: wrong confirm_phrase
+        success, response = self.run_test(
+            "POST /api/data/reset-auth with wrong confirm_phrase",
+            "POST",
+            "data/reset-auth",
+            400,
+            data={
+                "confirm_phrase": "reset",
+                "admin_username": "admin",
+                "admin_password": "swarna123"
+            }
+        )
+        
+        # Test negative case: wrong admin password
+        success, response = self.run_test(
+            "POST /api/data/reset-auth with wrong password",
+            "POST",
+            "data/reset-auth",
+            401,
+            data={
+                "confirm_phrase": "RESET AUTH",
+                "admin_username": "admin",
+                "admin_password": "wrongpassword"
+            }
+        )
+        
+        # Test positive case: correct reset-auth
+        success, response = self.run_test(
+            "POST /api/data/reset-auth with correct credentials",
+            "POST",
+            "data/reset-auth",
+            200,
+            data={
+                "confirm_phrase": "RESET AUTH",
+                "admin_username": "admin",
+                "admin_password": "swarna123"
+            },
+            validate_fn=lambda r: self.validate_reset_auth_response(r)
+        )
+        
+        if not success:
+            print("⚠️ CRITICAL: reset-auth failed")
+            return False
+        
+        # Store backup filename for later download test
+        self.backup_filename = response.get('backup_filename')
+        backup_file = response.get('backup_file')
+        backup_size = response.get('backup_size_bytes')
+        
+        print(f"  Backup created: {self.backup_filename} ({backup_size} bytes)")
+        print(f"  Backup path: {backup_file}")
+        
+        # Test that admin/swarna123 login works after reset
+        success, login_response = self.run_test(
+            "Login with admin/swarna123 after reset-auth",
+            "POST",
+            "auth/login",
+            200,
+            data={
+                "username": "admin",
+                "password": "swarna123"
+            },
+            validate_fn=lambda r: (
+                (r.get('success') == True, "Login should succeed after reset-auth")
+            )
+        )
+        
+        if not success:
+            print("⚠️ CRITICAL: Admin login failed after reset-auth")
+            return False
+        
+        # Verify business data is UNCHANGED
+        success, info_after = self.run_test(
+            "Get data info after reset-auth",
+            "GET",
+            "data/info",
+            200
+        )
+        
+        if success:
+            final_counts = info_after.get('counts', {})
+            print(f"  Final counts: products={final_counts.get('products')}, customers={final_counts.get('customers')}, bills={final_counts.get('bills')}")
+            
+            # Check business collections are unchanged
+            business_collections = ['products', 'categories', 'customers', 'bills', 'loan_payments', 'expenses', 'purchases']
+            
+            all_unchanged = True
+            for collection in business_collections:
+                if initial_counts.get(collection) != final_counts.get(collection):
+                    print(f"  ❌ {collection} count changed: {initial_counts.get(collection)} → {final_counts.get(collection)}")
+                    all_unchanged = False
+            
+            if all_unchanged:
+                self.log_test("Business data counts UNCHANGED after reset-auth", True)
+            else:
+                self.log_test("Business data counts UNCHANGED after reset-auth", False, "Some business data counts changed")
+            
+            # Check users count is now 1 (only admin)
+            if final_counts.get('users') == 1:
+                self.log_test("Users count is 1 after reset-auth", True)
+            else:
+                self.log_test("Users count is 1 after reset-auth", False, f"Expected 1 user, got {final_counts.get('users')}")
+        
+        return True
+
+    def validate_reset_auth_response(self, data):
+        """Validate reset-auth response structure"""
+        required_keys = ['success', 'backup_file', 'backup_filename', 'backup_size_bytes', 'users_deleted', 'reseeded_admin', 'message']
+        
+        for key in required_keys:
+            if key not in data:
+                return (False, f"Missing required key: {key}")
+        
+        # Validate success is true
+        if data['success'] != True:
+            return (False, f"success should be true, got {data['success']}")
+        
+        # Validate backup_file is absolute path
+        if not data['backup_file'].startswith('/app/backend/data/backups/backup_'):
+            return (False, f"backup_file should start with /app/backend/data/backups/backup_, got {data['backup_file']}")
+        
+        if not data['backup_file'].endswith('.zip'):
+            return (False, f"backup_file should end with .zip, got {data['backup_file']}")
+        
+        # Validate backup_size_bytes > 0
+        if data['backup_size_bytes'] <= 0:
+            return (False, f"backup_size_bytes should be > 0, got {data['backup_size_bytes']}")
+        
+        # Validate users_deleted >= 1
+        if data['users_deleted'] < 1:
+            return (False, f"users_deleted should be >= 1, got {data['users_deleted']}")
+        
+        # Validate reseeded_admin
+        if data['reseeded_admin'].get('username') != 'admin':
+            return (False, f"reseeded_admin.username should be 'admin', got {data['reseeded_admin'].get('username')}")
+        
+        if data['reseeded_admin'].get('password') != 'swarna123':
+            return (False, f"reseeded_admin.password should be 'swarna123', got {data['reseeded_admin'].get('password')}")
+        
+        # Validate message contains backup path
+        if data['backup_file'] not in data['message']:
+            return (False, "message should contain backup_file path")
+        
+        return (True, "Reset-auth response is valid")
+
+    def test_backup_download(self):
+        """Test 12: Data Management - GET /api/data/backup/download/{name}"""
+        print("\n💾 Test 12: Data Management - GET /api/data/backup/download/{name}")
+        
+        if not hasattr(self, 'backup_filename') or not self.backup_filename:
+            print("⚠️ No backup filename available from reset-auth test")
+            return False
+        
+        # Test positive case: download valid backup
+        url = f"{self.base_url}/api/data/backup/download/{self.backup_filename}"
+        
+        try:
+            response = requests.get(url, timeout=60)
+            
+            if response.status_code != 200:
+                self.log_test(f"GET /api/data/backup/download/{self.backup_filename}", False, f"Expected 200, got {response.status_code}")
+                return False
+            
+            self.log_test(f"GET /api/data/backup/download/{self.backup_filename} - status 200", True)
+            
+            # Check Content-Type
+            content_type = response.headers.get('Content-Type', '')
+            if 'application/zip' not in content_type:
+                self.log_test("Backup download Content-Type is application/zip", False, f"Expected application/zip, got {content_type}")
+            else:
+                self.log_test("Backup download Content-Type is application/zip", True)
+            
+            # Validate ZIP content
+            import zipfile
+            import io
+            
+            zip_buffer = io.BytesIO(response.content)
+            
+            try:
+                with zipfile.ZipFile(zip_buffer, 'r') as zf:
+                    file_list = zf.namelist()
+                    
+                    # Check required files
+                    required_files = ['products.csv', 'categories.csv', 'customers.csv', 'bills.csv', 
+                                      'loan_payments.csv', 'expenses.csv', 'purchases.csv', 'users.csv', '_metadata.json']
+                    
+                    all_present = all(f in file_list for f in required_files)
+                    
+                    if all_present:
+                        self.log_test("Backup ZIP contains all required files", True)
+                    else:
+                        self.log_test("Backup ZIP contains all required files", False, f"Missing files in backup")
+                    
+            except zipfile.BadZipFile:
+                self.log_test("Backup download is a valid ZIP file", False, "Invalid ZIP file")
+                return False
+            
+        except Exception as e:
+            self.log_test(f"GET /api/data/backup/download/{self.backup_filename}", False, f"Exception: {str(e)}")
+            return False
+        
+        # Test negative case: invalid filename (path traversal)
+        success, response = self.run_test(
+            "GET /api/data/backup/download with path traversal",
+            "GET",
+            "data/backup/download/../etc/passwd",
+            400
+        )
+        
+        # Test negative case: nonexistent but well-formed filename
+        success, response = self.run_test(
+            "GET /api/data/backup/download with nonexistent file",
+            "GET",
+            "data/backup/download/backup_19700101_000000.zip",
+            404
+        )
+        
+        return True
+
+    def test_sanity_after_reset(self):
+        """Test 13: Sanity check - business operations still work after reset-auth"""
+        print("\n✅ Test 13: Sanity check - business operations after reset-auth")
+        
+        # Try to create a new product
+        if not self.test_category_id:
+            print("⚠️ No category available for sanity test")
+            return False
+        
+        product_data = {
+            "name": "DAP (50kg)",
+            "name_telugu": "డిఏపి",
+            "category_id": self.test_category_id,
+            "batch_no": "BATCH2024999",
+            "mfg_date": "2024-01-01",
+            "exp_date": "2025-12-31",
+            "purchase_price": 1500.0,
+            "mrp": 1800.0,
+            "selling_price": 1750.0,
+            "quantity": 100,
+            "unit": "bags",
+            "bag_size_kg": 50
+        }
+        
+        success, response = self.run_test(
+            "Create product after reset-auth",
+            "POST",
+            "products",
+            200,
+            data=product_data
+        )
+        
+        if not success:
+            print("⚠️ Failed to create product after reset-auth")
+            return False
+        
+        # Try to create a new customer
+        customer_data = {
+            "name": "Lakshmi Devi",
+            "village": "Gangaram",
+            "phone": "9123456789",
+            "aadhaar": "999888777666"
+        }
+        
+        success, response = self.run_test(
+            "Create customer after reset-auth",
+            "POST",
+            "customers",
+            200,
+            data=customer_data
+        )
+        
+        if not success:
+            print("⚠️ Failed to create customer after reset-auth")
+            return False
+        
+        new_customer_id = response.get('id')
+        new_product_id = None
+        
+        # Get the product we just created
+        success, products = self.run_test(
+            "Get products after reset-auth",
+            "GET",
+            "products/admin",
+            200
+        )
+        
+        if success:
+            for p in products:
+                if p.get('name') == 'DAP (50kg)':
+                    new_product_id = p.get('id')
+                    break
+        
+        if not new_product_id:
+            print("⚠️ Could not find newly created product")
+            return False
+        
+        # Try to create a bill
+        bill_data = {
+            "customer_id": new_customer_id,
+            "customer_name": "Lakshmi Devi",
+            "village": "Gangaram",
+            "items": [
+                {
+                    "product_id": new_product_id,
+                    "product_name": "DAP (50kg)",
+                    "batch_no": "BATCH2024999",
+                    "mfg_date": "2024-01-01",
+                    "exp_date": "2025-12-31",
+                    "quantity": 1,
+                    "unit": "bags",
+                    "rate": 1750.0,
+                    "amount": 1750.0
+                }
+            ],
+            "total_amount": 1750.0,
+            "payment_type": "cash",
+            "paid_amount": 1750.0,
+            "cash_amount": 1750.0,
+            "upi_amount": 0.0
+        }
+        
+        success, response = self.run_test(
+            "Create bill after reset-auth",
+            "POST",
+            "bills",
+            200,
+            data=bill_data
+        )
+        
+        if not success:
+            print("⚠️ Failed to create bill after reset-auth")
+            return False
+        
+        print("✅ All business operations working correctly after reset-auth")
+        return True
+
     def run_all_tests(self):
         """Run all API tests in priority order"""
         print("🚀 Starting Swarna Deepika Backend API Tests")
@@ -697,6 +1184,13 @@ Urea (45kg),0.225"""
             self.test_day_summary()
             self.test_subsidy_csv_sync()
             self.test_regression_endpoints()
+            
+            # NEW DATA MANAGEMENT TESTS
+            self.test_data_management_info()
+            self.test_data_export()
+            self.test_data_reset_auth()
+            self.test_backup_download()
+            self.test_sanity_after_reset()
             
         except Exception as e:
             print(f"\n❌ Test suite failed with exception: {str(e)}")

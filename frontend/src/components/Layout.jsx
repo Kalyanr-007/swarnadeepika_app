@@ -12,7 +12,8 @@ import {
   Truck,
   Wallet,
   LineChart,
-  Sun
+  Sun,
+  Database
 } from "lucide-react";
 import { Button } from "./ui/button";
 
@@ -28,6 +29,7 @@ const Layout = ({ children, user, onLogout }) => {
     { path: "/expenses", icon: Wallet, label: "ఖర్చులు", labelEn: "Expenses" },
     { path: "/reports", icon: ClipboardList, label: "నివేదిక", labelEn: "Reports" },
     { path: "/accounts", icon: LineChart, label: "ఖాతాలు", labelEn: "Accounts" },
+    { path: "/data", icon: Database, label: "డేటా & బ్యాకప్", labelEn: "Data & Backup" },
     { path: "/settings", icon: Settings, label: "సెట్టింగ్‌లు", labelEn: "Settings" },
   ];
 
