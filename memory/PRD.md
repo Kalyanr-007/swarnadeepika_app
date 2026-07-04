@@ -49,5 +49,12 @@ See /app/memory/test_credentials.md — admin / swarna123
 - P3: store cost snapshot on BillItem so back-dated P&L is exact (currently uses current product cost for COGS)
 - Idea: opening cash balance setting so Accounts shows absolute cash-in-hand, not just net flow
 
+## 2026-07-04 — Local-run fix + desktop backend sync
+- Root cause of user's "nothing works in local (add stock/customer fails)": .env files gitignored, so cloned repo had no MONGO_URL (backend crash-looped) and no REACT_APP_BACKEND_URL (frontend hit undefined/api/... 404).
+- Added: backend/.env.example, frontend/.env.example (committed). server.py now has safe fallbacks (mongodb://localhost:27017 + swarna_deepika_db) and auto-seeds admin/swarna123 on startup.
+- Root README rewritten with the one-click desktop/run_local.bat flow + cloud flow.
+- desktop/backend/app.py brought up to parity with cloud: fixed 4 INSERT bugs (product bag_size_kg, customer aadhaar, bill cash_amount+upi_amount, loan_payment method) and added /api/reports/day-summary + /api/subsidy/{preview,apply}. Verified with FastAPI TestClient.
+- Backend testing subagent ran 31/31 test cases passing (login, product bag_size, aadhaar, split cash/upi bill, loan method, day-summary shape, subsidy MT-to-bags, regressions).
+
 ## Notes
 - Daily report date matching uses stored ISO date prefix (UTC), consistent with dashboard.
