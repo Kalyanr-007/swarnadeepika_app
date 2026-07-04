@@ -7,6 +7,9 @@ import os
 import sys
 import json
 import uuid
+import csv
+import io
+import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -78,19 +81,22 @@ def init_db():
             CREATE TABLE IF NOT EXISTS products (
                 id TEXT PRIMARY KEY, name TEXT, name_telugu TEXT, category_id TEXT,
                 batch_no TEXT, mfg_date TEXT, exp_date TEXT, purchase_price REAL,
-                mrp REAL, selling_price REAL, quantity INTEGER, unit TEXT, created_at TEXT
+                mrp REAL, selling_price REAL, quantity INTEGER, unit TEXT,
+                bag_size_kg REAL DEFAULT 0, created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS customers (
                 id TEXT PRIMARY KEY, name TEXT, village TEXT, phone TEXT,
-                address TEXT, created_at TEXT
+                address TEXT, aadhaar TEXT DEFAULT '', created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS bills (
                 id TEXT PRIMARY KEY, bill_no INTEGER, customer_id TEXT, customer_name TEXT,
                 village TEXT, items TEXT, total_amount REAL, payment_type TEXT,
-                paid_amount REAL, balance_amount REAL, date TEXT, created_at TEXT
+                paid_amount REAL, cash_amount REAL DEFAULT 0, upi_amount REAL DEFAULT 0,
+                balance_amount REAL, date TEXT, created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS loan_payments (
-                id TEXT PRIMARY KEY, bill_id TEXT, amount REAL, payment_date TEXT, notes TEXT
+                id TEXT PRIMARY KEY, bill_id TEXT, amount REAL, payment_date TEXT,
+                notes TEXT, method TEXT DEFAULT 'cash'
             );
             CREATE TABLE IF NOT EXISTS expenses (
                 id TEXT PRIMARY KEY, amount REAL, category TEXT, note TEXT, date TEXT, created_at TEXT
@@ -141,6 +147,7 @@ class ProductCreate(BaseModel):
     selling_price: float
     quantity: int
     unit: str = "piece"
+    bag_size_kg: float = 0
 
 
 class ProductUpdate(BaseModel):
@@ -155,6 +162,7 @@ class ProductUpdate(BaseModel):
     selling_price: Optional[float] = None
     quantity: Optional[int] = None
     unit: Optional[str] = None
+    bag_size_kg: Optional[float] = None
 
 
 class CustomerCreate(BaseModel):
@@ -162,6 +170,7 @@ class CustomerCreate(BaseModel):
     village: str
     phone: Optional[str] = ""
     address: Optional[str] = ""
+    aadhaar: Optional[str] = ""
 
 
 class CustomerUpdate(BaseModel):
@@ -169,6 +178,7 @@ class CustomerUpdate(BaseModel):
     village: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
+    aadhaar: Optional[str] = None
 
 
 class BillItem(BaseModel):

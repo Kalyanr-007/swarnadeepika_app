@@ -11,13 +11,15 @@ import {
   Settings,
   Truck,
   Wallet,
-  LineChart
+  LineChart,
+  Sun
 } from "lucide-react";
 import { Button } from "./ui/button";
 
 const Layout = ({ children, user, onLogout }) => {
   const navItems = [
     { path: "/", icon: LayoutDashboard, label: "డాష్‌బోర్డ్", labelEn: "Dashboard" },
+    { path: "/day-summary", icon: Sun, label: "రోజు సారాంశం", labelEn: "Day Book" },
     { path: "/billing", icon: Receipt, label: "బిల్లింగ్", labelEn: "Billing" },
     { path: "/stock", icon: Package, label: "స్టాక్", labelEn: "Stock" },
     { path: "/purchases", icon: Truck, label: "కొనుగోళ్లు", labelEn: "Purchases" },

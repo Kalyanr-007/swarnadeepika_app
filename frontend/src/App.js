@@ -12,6 +12,7 @@ import SettingsPage from "./pages/SettingsPage";
 import ExpensesPage from "./pages/ExpensesPage";
 import PurchasesPage from "./pages/PurchasesPage";
 import AccountsPage from "./pages/AccountsPage";
+import DaySummaryPage from "./pages/DaySummaryPage";
 import Layout from "./components/Layout";
 import { Toaster } from "./components/ui/sonner";
 
@@ -67,6 +68,7 @@ function App() {
                 <Layout user={user} onLogout={handleLogout}>
                   <Routes>
                     <Route path="/" element={<DashboardPage />} />
+                    <Route path="/day-summary" element={<DaySummaryPage />} />
                     <Route path="/billing" element={<BillingPage />} />
                     <Route path="/stock" element={<StockPage user={user} />} />
                     <Route path="/customers" element={<CustomersPage />} />

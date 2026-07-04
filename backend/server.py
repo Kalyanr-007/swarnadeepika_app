@@ -9,6 +9,9 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional
 import uuid
 import secrets
+import csv
+import io
+import re
 from datetime import datetime, timezone
 import bcrypt
 
@@ -70,6 +73,7 @@ class ProductCreate(BaseModel):
     selling_price: float
     quantity: int
     unit: str = "piece"  # kg, litre, piece, packet, etc.
+    bag_size_kg: float = 0  # weight per bag (for govt MT->bags conversion)
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -83,6 +87,7 @@ class ProductUpdate(BaseModel):
     selling_price: Optional[float] = None
     quantity: Optional[int] = None
     unit: Optional[str] = None
+    bag_size_kg: Optional[float] = None
 
 class Product(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -98,6 +103,7 @@ class Product(BaseModel):
     selling_price: float
     quantity: int
     unit: str = "piece"
+    bag_size_kg: float = 0
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 class ProductPublic(BaseModel):
@@ -114,6 +120,7 @@ class ProductPublic(BaseModel):
     selling_price: float
     quantity: int
     unit: str
+    bag_size_kg: float = 0
     created_at: str
 
 # Customer Models
@@ -122,12 +129,14 @@ class CustomerCreate(BaseModel):
     village: str
     phone: Optional[str] = ""
     address: Optional[str] = ""
+    aadhaar: Optional[str] = ""
 
 class CustomerUpdate(BaseModel):
     name: Optional[str] = None
     village: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
+    aadhaar: Optional[str] = None
 
 class Customer(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -136,6 +145,7 @@ class Customer(BaseModel):
     village: str
     phone: str = ""
     address: str = ""
+    aadhaar: str = ""
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 # Bill Item Model
@@ -159,6 +169,8 @@ class BillCreate(BaseModel):
     total_amount: float
     payment_type: str  # "cash" or "credit"
     paid_amount: float = 0
+    cash_amount: float = 0
+    upi_amount: float = 0
 
 class Bill(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -171,6 +183,8 @@ class Bill(BaseModel):
     total_amount: float
     payment_type: str
     paid_amount: float
+    cash_amount: float = 0
+    upi_amount: float = 0
     balance_amount: float
     date: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -188,6 +202,7 @@ class LoanPaymentCreate(BaseModel):
     bill_id: str
     amount: float
     notes: str = ""
+    method: str = "cash"  # cash or upi
 
 # ==================== AUTH ENDPOINTS ====================
 
@@ -449,10 +464,15 @@ async def create_bill(bill: BillCreate):
     # Get next bill number
     last_bill = await db.bills.find_one(sort=[("bill_no", -1)])
     next_bill_no = (last_bill['bill_no'] + 1) if last_bill else 1
-    
-    # Calculate balance
-    balance = bill.total_amount - bill.paid_amount
-    
+
+    # Payment split (cash / upi). Backward compatible with paid_amount.
+    cash_amount = bill.cash_amount or 0
+    upi_amount = bill.upi_amount or 0
+    if cash_amount == 0 and upi_amount == 0 and bill.paid_amount:
+        cash_amount = bill.paid_amount  # legacy: treat paid as cash
+    paid = cash_amount + upi_amount
+    balance = bill.total_amount - paid
+
     bill_obj = Bill(
         bill_no=next_bill_no,
         customer_id=bill.customer_id,
@@ -461,7 +481,9 @@ async def create_bill(bill: BillCreate):
         items=[item.model_dump() for item in bill.items],
         total_amount=bill.total_amount,
         payment_type=bill.payment_type,
-        paid_amount=bill.paid_amount,
+        paid_amount=paid,
+        cash_amount=cash_amount,
+        upi_amount=upi_amount,
         balance_amount=balance
     )
     
@@ -544,6 +566,7 @@ async def record_loan_payment(payment: LoanPaymentCreate):
         notes=payment.notes
     )
     doc = payment_obj.model_dump()
+    doc['method'] = payment.method or "cash"
     await db.loan_payments.insert_one(doc)
     
     return payment_obj
@@ -723,6 +746,174 @@ async def get_summary(start_date: Optional[str] = None, end_date: Optional[str] 
         "cash_flow": {"inflow": cash_in, "outflow": cash_out, "net": cash_in - cash_out},
         "daily": daily,
     }
+
+# ==================== DAY SUMMARY / BUSINESS HEALTH ====================
+
+@api_router.get("/reports/day-summary")
+async def day_summary(date: Optional[str] = None):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    date = date or today
+    ym = date[:7]
+    y, m = int(ym[:4]), int(ym[5:7])
+    pm_y, pm_m = (y, m - 1) if m > 1 else (y - 1, 12)
+    prev_ym = f"{pm_y:04d}-{pm_m:02d}"
+
+    bills_all = await db.bills.find({}, {"_id": 0}).to_list(10000)
+    payments_all = await db.loan_payments.find({}, {"_id": 0}).to_list(10000)
+    expenses_all = await db.expenses.find({}, {"_id": 0}).to_list(10000)
+    products = await db.products.find({}, {"_id": 0}).to_list(10000)
+
+    day_bills = [b for b in bills_all if (b.get('date') or '')[:10] == date]
+    day_payments = [p for p in payments_all if (p.get('payment_date') or '')[:10] == date]
+    day_expenses = [e for e in expenses_all if (e.get('date') or '')[:10] == date]
+
+    cash_from_bills = sum(b.get('cash_amount', 0) for b in day_bills)
+    upi_from_bills = sum(b.get('upi_amount', 0) for b in day_bills)
+    cash_from_loans = sum(p['amount'] for p in day_payments if p.get('method', 'cash') == 'cash')
+    upi_from_loans = sum(p['amount'] for p in day_payments if p.get('method') == 'upi')
+    total_cash = cash_from_bills + cash_from_loans
+    total_upi = upi_from_bills + upi_from_loans
+
+    hamali = sum(e['amount'] for e in day_expenses if any(w in e['category'].lower() for w in ['hamali', 'labor', 'labour']))
+    all_day_expenses = sum(e['amount'] for e in day_expenses)
+    other_expenses = all_day_expenses - hamali
+    expected_drawer = total_cash - all_day_expenses
+
+    item_map = {}
+    for b in day_bills:
+        for it in b['items']:
+            k = it['product_name']
+            item_map.setdefault(k, {"product_name": k, "unit": it.get('unit', ''), "quantity": 0, "amount": 0})
+            item_map[k]['quantity'] += it['quantity']
+            item_map[k]['amount'] += it['amount']
+    top_items = sorted(item_map.values(), key=lambda x: x['quantity'], reverse=True)[:10]
+
+    credit_issued = sum(b['balance_amount'] for b in day_bills)
+    credit_recovered = sum(p['amount'] for p in day_payments)
+
+    this_month_sales = sum(b['total_amount'] for b in bills_all if (b.get('date') or '')[:7] == ym)
+    prev_month_sales = sum(b['total_amount'] for b in bills_all if (b.get('date') or '')[:7] == prev_ym)
+    if prev_month_sales > 0:
+        mom_growth = (this_month_sales - prev_month_sales) / prev_month_sales * 100
+    else:
+        mom_growth = 100.0 if this_month_sales > 0 else 0.0
+    outstanding_credit = sum(b['balance_amount'] for b in bills_all if b['balance_amount'] > 0)
+
+    expiring, low_stock = [], []
+    todaydate = datetime.now(timezone.utc).date()
+    for p in products:
+        try:
+            d = (datetime.strptime(p['exp_date'][:10], "%Y-%m-%d").date() - todaydate).days
+        except Exception:
+            d = 9999
+        if 0 <= d <= 60:
+            expiring.append({"name": p['name'], "exp_date": p['exp_date'], "days_left": d, "quantity": p['quantity'], "unit": p.get('unit', '')})
+        if p['quantity'] < 10:
+            low_stock.append({"name": p['name'], "quantity": p['quantity'], "unit": p.get('unit', '')})
+    expiring = sorted(expiring, key=lambda x: x['days_left'])
+
+    return {
+        "date": date,
+        "cash_flow": {
+            "cash_collected": total_cash, "upi_collected": total_upi,
+            "hamali_payouts": hamali, "other_expenses": other_expenses,
+            "expected_drawer_cash": expected_drawer, "total_collected": total_cash + total_upi,
+        },
+        "top_items": top_items,
+        "khata": {"issued_today": credit_issued, "recovered_today": credit_recovered},
+        "growth": {
+            "this_month_sales": this_month_sales, "prev_month_sales": prev_month_sales,
+            "mom_growth_pct": round(mom_growth, 1), "outstanding_market_credit": outstanding_credit,
+        },
+        "alerts": {
+            "expiring": expiring, "low_stock": low_stock,
+            "expiring_count": len(expiring), "low_stock_count": len(low_stock),
+        },
+    }
+
+# ==================== GOVERNMENT SUBSIDY CSV SYNC ====================
+
+def _parse_bag_size(name):
+    mtch = re.search(r"(\d+(?:\.\d+)?)\s*kg", name or "", re.I)
+    return float(mtch.group(1)) if mtch else 0
+
+def _norm_name(name):
+    return re.sub(r"\(.*?\)", "", name or "").strip().lower()
+
+def _parse_subsidy_csv(text):
+    for delim in [',', '\t']:
+        try:
+            rows = list(csv.DictReader(io.StringIO(text.strip()), delimiter=delim))
+            if rows and len(rows[0].keys()) > 1:
+                return rows
+        except Exception:
+            continue
+    return []
+
+async def _build_subsidy_preview(text):
+    rows = _parse_subsidy_csv(text)
+    products = await db.products.find({}, {"_id": 0}).to_list(10000)
+    by_norm = {}
+    for p in products:
+        by_norm[_norm_name(p['name'])] = p
+    result = []
+    for row in rows:
+        keys = {k.lower().strip(): k for k in row.keys()}
+        name = None
+        for nk in ['product name', 'product', 'name', 'item']:
+            if nk in keys:
+                name = row[keys[nk]]
+                break
+        if not name:
+            continue
+        sold_bags = None
+        note = ""
+        for cand in ['sold (bags)', 'sold bags', 'sold']:
+            if cand in keys and row[keys[cand]] not in (None, ''):
+                try:
+                    sold_bags = float(row[keys[cand]])
+                    break
+                except Exception:
+                    pass
+        prod = by_norm.get(_norm_name(name))
+        if sold_bags is None:
+            for cand in ['sold (mt)', 'sold mt', 'mt', 'quantity (mt)', 'quantity']:
+                if cand in keys and row[keys[cand]] not in (None, ''):
+                    try:
+                        mt = float(row[keys[cand]])
+                        bag = (prod.get('bag_size_kg') if prod else 0) or _parse_bag_size(name)
+                        if bag > 0:
+                            sold_bags = mt * 1000 / bag
+                            note = f"{mt} MT ÷ {bag}kg = {sold_bags:.0f} bags"
+                        else:
+                            note = "No bag size set — cannot convert MT"
+                        break
+                    except Exception:
+                        pass
+        sb = int(round(sold_bags)) if sold_bags is not None else 0
+        entry = {"product_name": name, "matched": bool(prod), "sold_bags": sb, "note": note}
+        if prod:
+            entry["product_id"] = prod['id']
+            entry["current_stock"] = prod['quantity']
+            entry["new_stock"] = prod['quantity'] - sb
+        else:
+            entry["note"] = (note + " | " if note else "") + "Not found in stock"
+        result.append(entry)
+    return result
+
+@api_router.post("/subsidy/preview")
+async def subsidy_preview(payload: dict):
+    return {"rows": await _build_subsidy_preview(payload.get("csv", ""))}
+
+@api_router.post("/subsidy/apply")
+async def subsidy_apply(payload: dict):
+    rows = await _build_subsidy_preview(payload.get("csv", ""))
+    applied = 0
+    for r in rows:
+        if r.get("matched") and r.get("sold_bags", 0) > 0:
+            await db.products.update_one({"id": r["product_id"]}, {"$inc": {"quantity": -int(r["sold_bags"])}})
+            applied += 1
+    return {"applied": applied, "rows": rows}
 
 # ==================== DASHBOARD ENDPOINTS ====================
 

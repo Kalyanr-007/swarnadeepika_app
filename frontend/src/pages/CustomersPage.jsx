@@ -43,7 +43,8 @@ const CustomersPage = () => {
     name: "",
     village: "",
     phone: "",
-    address: ""
+    address: "",
+    aadhaar: ""
   });
 
   useEffect(() => {
@@ -69,7 +70,16 @@ const CustomersPage = () => {
   });
 
   const resetForm = () => {
-    setCustomerForm({ name: "", village: "", phone: "", address: "" });
+    setCustomerForm({ name: "", village: "", phone: "", address: "", aadhaar: "" });
+  };
+
+  const validateAadhaar = () => {
+    const a = customerForm.aadhaar?.trim();
+    if (a && !/^\d{12}$/.test(a)) {
+      toast.error("Aadhaar must be exactly 12 digits");
+      return false;
+    }
+    return true;
   };
 
   const handleAddCustomer = async () => {
@@ -77,6 +87,7 @@ const CustomersPage = () => {
       toast.error("Name and village are required");
       return;
     }
+    if (!validateAadhaar()) return;
     try {
       await axios.post(`${API}/customers`, customerForm);
       toast.success("Customer added!");
@@ -89,6 +100,7 @@ const CustomersPage = () => {
   };
 
   const handleUpdateCustomer = async () => {
+    if (!validateAadhaar()) return;
     try {
       await axios.put(`${API}/customers/${editingCustomer.id}`, customerForm);
       toast.success("Customer updated!");
@@ -122,7 +134,8 @@ const CustomersPage = () => {
       name: customer.name,
       village: customer.village,
       phone: customer.phone || "",
-      address: customer.address || ""
+      address: customer.address || "",
+      aadhaar: customer.aadhaar || ""
     });
   };
 
@@ -160,6 +173,7 @@ const CustomersPage = () => {
                 <TableHead>Name</TableHead>
                 <TableHead>Village</TableHead>
                 <TableHead>Phone</TableHead>
+                <TableHead>Aadhaar</TableHead>
                 <TableHead>Address</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -183,6 +197,9 @@ const CustomersPage = () => {
                     ) : (
                       <span className="text-slate-400">-</span>
                     )}
+                  </TableCell>
+                  <TableCell className="text-slate-600">
+                    {customer.aadhaar || <span className="text-slate-400">-</span>}
                   </TableCell>
                   <TableCell className="max-w-xs truncate text-slate-500">
                     {customer.address || "-"}
@@ -261,6 +278,16 @@ const CustomersPage = () => {
                 value={customerForm.address}
                 onChange={(e) => setCustomerForm({ ...customerForm, address: e.target.value })}
                 placeholder="Full address"
+              />
+            </div>
+            <div>
+              <Label>Aadhaar Number</Label>
+              <Input
+                value={customerForm.aadhaar}
+                onChange={(e) => setCustomerForm({ ...customerForm, aadhaar: e.target.value.replace(/\D/g, "").slice(0, 12) })}
+                placeholder="12-digit Aadhaar (optional)"
+                inputMode="numeric"
+                data-testid="customer-aadhaar-input"
               />
             </div>
             <Button

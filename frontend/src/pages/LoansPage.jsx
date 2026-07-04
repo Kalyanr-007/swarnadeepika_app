@@ -31,11 +31,18 @@ const LoansPage = () => {
   const [selectedBill, setSelectedBill] = useState(null);
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentNotes, setPaymentNotes] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("cash");
   const [paymentHistory, setPaymentHistory] = useState([]);
+  const [customersMap, setCustomersMap] = useState({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchPendingLoans();
+    axios.get(`${API}/customers`).then((r) => {
+      const map = {};
+      r.data.forEach((c) => { map[c.id] = c; });
+      setCustomersMap(map);
+    }).catch(() => {});
   }, []);
 
   const fetchPendingLoans = async () => {
@@ -64,6 +71,7 @@ const LoansPage = () => {
     setSelectedBill(bill);
     setPaymentAmount("");
     setPaymentNotes("");
+    setPaymentMethod("cash");
     setShowPaymentModal(true);
 
     // Fetch payment history
@@ -91,7 +99,8 @@ const LoansPage = () => {
       await axios.post(`${API}/loans/payment`, {
         bill_id: selectedBill.id,
         amount: amount,
-        notes: paymentNotes
+        notes: paymentNotes,
+        method: paymentMethod
       });
       toast.success("Payment recorded!");
       setShowPaymentModal(false);
@@ -236,6 +245,12 @@ const LoansPage = () => {
                   <span className="text-slate-600">Village</span>
                   <span>{selectedBill.village}</span>
                 </div>
+                {selectedBill.customer_id && customersMap[selectedBill.customer_id]?.aadhaar && (
+                  <div className="flex justify-between mb-2">
+                    <span className="text-slate-600">Aadhaar</span>
+                    <span className="font-mono" data-testid="loan-aadhaar">{customersMap[selectedBill.customer_id].aadhaar}</span>
+                  </div>
+                )}
                 <div className="flex justify-between border-t pt-2 mt-2">
                   <span className="text-red-600 font-semibold">Balance Due</span>
                   <span className="text-red-600 font-bold text-lg">
@@ -269,6 +284,29 @@ const LoansPage = () => {
                   placeholder="Enter amount"
                   max={selectedBill.balance_amount}
                 />
+              </div>
+              <div>
+                <Label>Received via</Label>
+                <div className="grid grid-cols-2 gap-2 mt-1">
+                  <Button
+                    type="button"
+                    variant={paymentMethod === "cash" ? "default" : "outline"}
+                    className={paymentMethod === "cash" ? "bg-green-700 hover:bg-green-800" : ""}
+                    onClick={() => setPaymentMethod("cash")}
+                    data-testid="loan-method-cash"
+                  >
+                    Cash
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={paymentMethod === "upi" ? "default" : "outline"}
+                    className={paymentMethod === "upi" ? "bg-blue-600 hover:bg-blue-700" : ""}
+                    onClick={() => setPaymentMethod("upi")}
+                    data-testid="loan-method-upi"
+                  >
+                    UPI
+                  </Button>
+                </div>
               </div>
               <div>
                 <Label>Notes (Optional)</Label>

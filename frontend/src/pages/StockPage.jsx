@@ -36,7 +36,7 @@ import {
   TableRow,
 } from "../components/ui/table";
 import { toast } from "sonner";
-import { Plus, Edit, Trash2, Package, Search, Eye, EyeOff } from "lucide-react";
+import { Plus, Edit, Trash2, Package, Search, Eye, EyeOff, Upload } from "lucide-react";
 import { format } from "date-fns";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -64,8 +64,14 @@ const StockPage = ({ user }) => {
     mrp: "",
     selling_price: "",
     quantity: "",
-    unit: "piece"
+    unit: "piece",
+    bag_size_kg: ""
   });
+
+  const [showSync, setShowSync] = useState(false);
+  const [csvText, setCsvText] = useState("");
+  const [syncPreview, setSyncPreview] = useState(null);
+  const [syncing, setSyncing] = useState(false);
 
   const isAdmin = user?.role === "admin";
 
@@ -110,8 +116,43 @@ const StockPage = ({ user }) => {
       mrp: "",
       selling_price: "",
       quantity: "",
-      unit: "piece"
+      unit: "piece",
+      bag_size_kg: ""
     });
+  };
+
+  const buildProductData = () => ({
+    ...productForm,
+    purchase_price: parseFloat(productForm.purchase_price),
+    mrp: parseFloat(productForm.mrp),
+    selling_price: parseFloat(productForm.selling_price),
+    quantity: parseInt(productForm.quantity),
+    bag_size_kg: parseFloat(productForm.bag_size_kg) || 0
+  });
+
+  const handleSyncPreview = async () => {
+    if (!csvText.trim()) { toast.error("Paste the CSV data first"); return; }
+    setSyncing(true);
+    try {
+      const res = await axios.post(`${API}/subsidy/preview`, { csv: csvText });
+      setSyncPreview(res.data.rows);
+    } catch {
+      toast.error("Could not parse CSV");
+    } finally { setSyncing(false); }
+  };
+
+  const handleSyncApply = async () => {
+    setSyncing(true);
+    try {
+      const res = await axios.post(`${API}/subsidy/apply`, { csv: csvText });
+      toast.success(`Stock updated for ${res.data.applied} product(s)`);
+      setShowSync(false);
+      setCsvText("");
+      setSyncPreview(null);
+      fetchData();
+    } catch {
+      toast.error("Sync failed");
+    } finally { setSyncing(false); }
   };
 
   const handleAddCategory = async () => {
@@ -147,13 +188,7 @@ const StockPage = ({ user }) => {
       return;
     }
     try {
-      const data = {
-        ...productForm,
-        purchase_price: parseFloat(productForm.purchase_price),
-        mrp: parseFloat(productForm.mrp),
-        selling_price: parseFloat(productForm.selling_price),
-        quantity: parseInt(productForm.quantity)
-      };
+      const data = buildProductData();
       await axios.post(`${API}/products`, data);
       toast.success("Product added!");
       resetProductForm();
@@ -166,13 +201,7 @@ const StockPage = ({ user }) => {
 
   const handleUpdateProduct = async () => {
     try {
-      const data = {
-        ...productForm,
-        purchase_price: parseFloat(productForm.purchase_price),
-        mrp: parseFloat(productForm.mrp),
-        selling_price: parseFloat(productForm.selling_price),
-        quantity: parseInt(productForm.quantity)
-      };
+      const data = buildProductData();
       await axios.put(`${API}/products/${editingProduct.id}`, data);
       toast.success("Product updated!");
       resetProductForm();
@@ -216,7 +245,8 @@ const StockPage = ({ user }) => {
       mrp: product.mrp,
       selling_price: product.selling_price,
       quantity: product.quantity,
-      unit: product.unit
+      unit: product.unit,
+      bag_size_kg: product.bag_size_kg || ""
     });
   };
 
@@ -243,6 +273,10 @@ const StockPage = ({ user }) => {
           <p className="font-telugu text-slate-500">స్టాక్ నిర్వహణ</p>
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setShowSync(true)} data-testid="sync-csv-btn">
+            <Upload className="w-4 h-4 mr-2" />
+            Govt CSV Sync
+          </Button>
           <Button variant="outline" onClick={() => setShowAddCategory(true)} data-testid="add-category-btn">
             <Plus className="w-4 h-4 mr-2" />
             Add Category
@@ -538,6 +572,16 @@ const StockPage = ({ user }) => {
                 </SelectContent>
               </Select>
             </div>
+            <div>
+              <Label>Bag Size (kg)</Label>
+              <Input
+                type="number"
+                value={productForm.bag_size_kg}
+                onChange={(e) => setProductForm({ ...productForm, bag_size_kg: e.target.value })}
+                placeholder="e.g. 45 or 50 (for govt MT→bags)"
+                data-testid="product-bagsize-input"
+              />
+            </div>
           </div>
           <Button
             onClick={editingProduct ? handleUpdateProduct : handleAddProduct}
@@ -572,6 +616,67 @@ const StockPage = ({ user }) => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Government CSV Sync */}
+      <Dialog open={showSync} onOpenChange={(open) => { setShowSync(open); if (!open) { setCsvText(""); setSyncPreview(null); } }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-auto" data-testid="sync-dialog">
+          <DialogHeader>
+            <DialogTitle>Government Subsidy CSV Sync</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-slate-500">
+              Paste the machine's end-of-day CSV. It matches each product by name, converts MT→bags
+              using the product's Bag Size when needed, and deducts the "Sold" quantity from local stock.
+            </p>
+            <textarea
+              className="w-full h-40 border rounded-md p-3 text-sm font-mono"
+              placeholder={"Product Name,Supplier,Opening (Bags),Received (Bags),Sold (Bags),Closing (Bags)\nUrea (45kg),IFFCO,120,50,140,30"}
+              value={csvText}
+              onChange={(e) => setCsvText(e.target.value)}
+              data-testid="sync-csv-textarea"
+            />
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={handleSyncPreview} disabled={syncing} data-testid="sync-preview-btn">
+                Preview
+              </Button>
+              {syncPreview && syncPreview.some((r) => r.matched && r.sold_bags > 0) && (
+                <Button onClick={handleSyncApply} disabled={syncing} className="bg-green-700 hover:bg-green-800" data-testid="sync-apply-btn">
+                  Apply & Update Stock
+                </Button>
+              )}
+            </div>
+
+            {syncPreview && (
+              <div className="border rounded-md overflow-hidden" data-testid="sync-preview-table">
+                <Table className="data-table">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Product</TableHead>
+                      <TableHead className="text-right">Sold</TableHead>
+                      <TableHead className="text-right">Stock</TableHead>
+                      <TableHead className="text-right">After</TableHead>
+                      <TableHead>Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {syncPreview.map((r, i) => (
+                      <TableRow key={i}>
+                        <TableCell>{r.product_name}</TableCell>
+                        <TableCell className="text-right">{r.sold_bags}</TableCell>
+                        <TableCell className="text-right">{r.matched ? r.current_stock : "-"}</TableCell>
+                        <TableCell className="text-right font-semibold">{r.matched ? r.new_stock : "-"}</TableCell>
+                        <TableCell className={r.matched ? "text-green-600 text-xs" : "text-red-500 text-xs"}>
+                          {r.matched ? (r.note || "Ready") : r.note}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

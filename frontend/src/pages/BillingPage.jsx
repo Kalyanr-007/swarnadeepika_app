@@ -38,8 +38,9 @@ const BillingPage = () => {
   const [customerName, setCustomerName] = useState("");
   const [customerVillage, setCustomerVillage] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
-  const [paymentType, setPaymentType] = useState("cash");
-  const [paidAmount, setPaidAmount] = useState("");
+  const [paymentMode, setPaymentMode] = useState("cash"); // cash | upi | credit
+  const [cashPaid, setCashPaid] = useState("");
+  const [upiPaid, setUpiPaid] = useState("");
 
   const [showCustomerModal, setShowCustomerModal] = useState(false);
   const [newCustomer, setNewCustomer] = useState({ name: "", village: "", phone: "" });
@@ -173,7 +174,12 @@ const BillingPage = () => {
       return;
     }
 
-    const paid = paymentType === "cash" ? totalAmount : parseFloat(paidAmount) || 0;
+    const cashAmt = paymentMode === "cash" ? totalAmount
+      : paymentMode === "credit" ? (parseFloat(cashPaid) || 0) : 0;
+    const upiAmt = paymentMode === "upi" ? totalAmount
+      : paymentMode === "credit" ? (parseFloat(upiPaid) || 0) : 0;
+    const paid = cashAmt + upiAmt;
+    const finalType = totalAmount - paid > 0 ? "credit" : "cash";
 
     try {
       const billData = {
@@ -182,8 +188,9 @@ const BillingPage = () => {
         village: customerVillage,
         items: cartItems.map(({ max_qty, ...item }) => item),
         total_amount: totalAmount,
-        payment_type: paymentType,
-        paid_amount: paid
+        payment_type: finalType,
+        cash_amount: cashAmt,
+        upi_amount: upiAmt,
       };
 
       const response = await axios.post(`${API}/bills`, billData);
@@ -196,7 +203,9 @@ const BillingPage = () => {
       setCustomerName("");
       setCustomerVillage("");
       setSelectedCustomerId("");
-      setPaidAmount("");
+      setCashPaid("");
+      setUpiPaid("");
+      setPaymentMode("cash");
       fetchData(); // Refresh products to update stock
     } catch (error) {
       toast.error("Failed to create bill");
@@ -392,34 +401,59 @@ const BillingPage = () => {
               <span className="text-2xl font-bold text-green-700">₹{totalAmount.toLocaleString()}</span>
             </div>
             
-            <div className="flex gap-2 mb-3">
+            <div className="grid grid-cols-3 gap-2 mb-3">
               <Button
-                variant={paymentType === "cash" ? "default" : "outline"}
-                className={paymentType === "cash" ? "flex-1 bg-green-700 hover:bg-green-800" : "flex-1"}
-                onClick={() => setPaymentType("cash")}
+                variant={paymentMode === "cash" ? "default" : "outline"}
+                className={paymentMode === "cash" ? "bg-green-700 hover:bg-green-800" : ""}
+                onClick={() => setPaymentMode("cash")}
                 data-testid="payment-cash"
               >
                 Cash
               </Button>
               <Button
-                variant={paymentType === "credit" ? "default" : "outline"}
-                className={paymentType === "credit" ? "flex-1 bg-yellow-600 hover:bg-yellow-700" : "flex-1"}
-                onClick={() => setPaymentType("credit")}
+                variant={paymentMode === "upi" ? "default" : "outline"}
+                className={paymentMode === "upi" ? "bg-blue-600 hover:bg-blue-700" : ""}
+                onClick={() => setPaymentMode("upi")}
+                data-testid="payment-upi"
+              >
+                UPI
+              </Button>
+              <Button
+                variant={paymentMode === "credit" ? "default" : "outline"}
+                className={paymentMode === "credit" ? "bg-yellow-600 hover:bg-yellow-700" : ""}
+                onClick={() => setPaymentMode("credit")}
                 data-testid="payment-credit"
               >
                 Credit
               </Button>
             </div>
 
-            {paymentType === "credit" && (
-              <Input
-                type="number"
-                placeholder="Amount paid now (optional)"
-                value={paidAmount}
-                onChange={(e) => setPaidAmount(e.target.value)}
-                className="mb-3"
-                data-testid="paid-amount-input"
-              />
+            {paymentMode === "credit" && (
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <div>
+                  <Label className="text-xs text-slate-500">Cash paid now</Label>
+                  <Input
+                    type="number"
+                    placeholder="0"
+                    value={cashPaid}
+                    onChange={(e) => setCashPaid(e.target.value)}
+                    data-testid="credit-cash-input"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs text-slate-500">UPI paid now</Label>
+                  <Input
+                    type="number"
+                    placeholder="0"
+                    value={upiPaid}
+                    onChange={(e) => setUpiPaid(e.target.value)}
+                    data-testid="credit-upi-input"
+                  />
+                </div>
+                <p className="col-span-2 text-sm text-red-600 font-medium" data-testid="credit-balance">
+                  Balance (Khata): ₹{Math.max(0, totalAmount - ((parseFloat(cashPaid) || 0) + (parseFloat(upiPaid) || 0))).toLocaleString()}
+                </p>
+              </div>
             )}
 
             <Button
