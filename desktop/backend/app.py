@@ -1232,4 +1232,5 @@ def spa(full_path: str):
 
 if __name__ == "__main__":
     init_db()
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+    host = os.environ.get("SDB_HOST", "127.0.0.1")
+    uvicorn.run(app, host=host, port=PORT, log_level="warning")

@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8756:8756"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - SDB_HOST=0.0.0.0
+      - SDB_PORT=8756
+      - SDB_DATA_DIR=/app/data
+    restart: always
