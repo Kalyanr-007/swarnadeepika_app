@@ -19,9 +19,18 @@ import {
   Eye,
   EyeOff,
   ShieldAlert,
+  Calculator as CalculatorIcon,
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "./ui/dialog";
+import Calculator from "./Calculator";
 
 // Sidebar is split into 3 sections. Sections marked private are HIDDEN when the
 // shop-owner toggles Privacy Mode (so farmers standing in front of the counter
@@ -178,6 +187,31 @@ const Layout = ({ children, user, onLogout }) => {
               </div>
             </div>
           ))}
+          
+          {/* Quick Calculator Tool */}
+          <div className="pt-2 px-3">
+            <Dialog>
+              <DialogTrigger asChild>
+                <Button 
+                  variant="outline" 
+                  className="w-full flex items-center justify-start gap-3 border-green-200 text-green-700 hover:bg-green-50"
+                  data-testid="calculator-btn"
+                >
+                  <CalculatorIcon className="w-4 h-4" />
+                  <div className="text-left">
+                    <span className="font-telugu block leading-tight">క్యాలిక్యులేటర్</span>
+                    <span className="text-[10px] text-slate-400">Calculator</span>
+                  </div>
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-[300px] p-0 border-none bg-transparent shadow-none">
+                <DialogHeader className="sr-only">
+                  <DialogTitle>Calculator</DialogTitle>
+                </DialogHeader>
+                <Calculator />
+              </DialogContent>
+            </Dialog>
+          </div>
         </nav>
 
         {/* User Section */}
