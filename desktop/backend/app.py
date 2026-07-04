@@ -201,12 +201,15 @@ class BillCreate(BaseModel):
     total_amount: float
     payment_type: str
     paid_amount: float = 0
+    cash_amount: float = 0
+    upi_amount: float = 0
 
 
 class LoanPaymentCreate(BaseModel):
     bill_id: str
     amount: float
     notes: str = ""
+    method: str = "cash"
 
 
 class ChangePasswordRequest(BaseModel):
@@ -412,9 +415,9 @@ def create_product(p: ProductCreate):
     with _lock, get_conn() as conn:
         conn.execute(
             """INSERT INTO products (id,name,name_telugu,category_id,batch_no,mfg_date,exp_date,
-               purchase_price,mrp,selling_price,quantity,unit,created_at)
+               purchase_price,mrp,selling_price,quantity,unit,bag_size_kg,created_at)
                VALUES (:id,:name,:name_telugu,:category_id,:batch_no,:mfg_date,:exp_date,
-               :purchase_price,:mrp,:selling_price,:quantity,:unit,:created_at)""",
+               :purchase_price,:mrp,:selling_price,:quantity,:unit,:bag_size_kg,:created_at)""",
             obj,
         )
     return obj
@@ -484,9 +487,10 @@ def create_customer(c: CustomerCreate):
     obj["created_at"] = now_iso()
     obj["phone"] = obj.get("phone") or ""
     obj["address"] = obj.get("address") or ""
+    obj["aadhaar"] = obj.get("aadhaar") or ""
     with _lock, get_conn() as conn:
         conn.execute(
-            "INSERT INTO customers (id,name,village,phone,address,created_at) VALUES (:id,:name,:village,:phone,:address,:created_at)",
+            "INSERT INTO customers (id,name,village,phone,address,aadhaar,created_at) VALUES (:id,:name,:village,:phone,:address,:aadhaar,:created_at)",
             obj,
         )
     return obj
@@ -556,15 +560,17 @@ def create_bill(bill: BillCreate):
             "total_amount": bill.total_amount,
             "payment_type": bill.payment_type,
             "paid_amount": bill.paid_amount,
+            "cash_amount": bill.cash_amount,
+            "upi_amount": bill.upi_amount,
             "balance_amount": balance,
             "date": now_iso(),
             "created_at": now_iso(),
         }
         conn.execute(
             """INSERT INTO bills (id,bill_no,customer_id,customer_name,village,items,total_amount,
-               payment_type,paid_amount,balance_amount,date,created_at)
+               payment_type,paid_amount,cash_amount,upi_amount,balance_amount,date,created_at)
                VALUES (:id,:bill_no,:customer_id,:customer_name,:village,:items,:total_amount,
-               :payment_type,:paid_amount,:balance_amount,:date,:created_at)""",
+               :payment_type,:paid_amount,:cash_amount,:upi_amount,:balance_amount,:date,:created_at)""",
             obj,
         )
         for it in bill.items:
@@ -624,8 +630,8 @@ def record_payment(payment: LoanPaymentCreate):
         conn.execute("UPDATE bills SET paid_amount=?, balance_amount=? WHERE id=?",
                      (new_paid, new_balance, payment.bill_id))
         obj = {"id": new_id(), "bill_id": payment.bill_id, "amount": payment.amount,
-               "payment_date": now_iso(), "notes": payment.notes}
-        conn.execute("INSERT INTO loan_payments (id,bill_id,amount,payment_date,notes) VALUES (:id,:bill_id,:amount,:payment_date,:notes)", obj)
+               "payment_date": now_iso(), "notes": payment.notes, "method": payment.method or "cash"}
+        conn.execute("INSERT INTO loan_payments (id,bill_id,amount,payment_date,notes,method) VALUES (:id,:bill_id,:amount,:payment_date,:notes,:method)", obj)
     return obj
 
 
@@ -843,6 +849,174 @@ def get_summary(start_date: Optional[str] = None, end_date: Optional[str] = None
         "cash_flow": {"inflow": cash_in, "outflow": cash_out, "net": cash_in - cash_out},
         "daily": daily,
     }
+
+
+# --- Day Summary / Business Health ---
+@api.get("/reports/day-summary")
+def day_summary(date: Optional[str] = None):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    date = date or today
+    ym = date[:7]
+    y, m = int(ym[:4]), int(ym[5:7])
+    pm_y, pm_m = (y, m - 1) if m > 1 else (y - 1, 12)
+    prev_ym = f"{pm_y:04d}-{pm_m:02d}"
+
+    with get_conn() as conn:
+        bills_all = [row_to_bill(r) for r in conn.execute("SELECT * FROM bills").fetchall()]
+        payments_all = [dict(r) for r in conn.execute("SELECT * FROM loan_payments").fetchall()]
+        expenses_all = [dict(r) for r in conn.execute("SELECT * FROM expenses").fetchall()]
+        products = [dict(r) for r in conn.execute("SELECT * FROM products").fetchall()]
+
+    day_bills = [b for b in bills_all if (b.get('date') or '')[:10] == date]
+    day_payments = [p for p in payments_all if (p.get('payment_date') or '')[:10] == date]
+    day_expenses = [e for e in expenses_all if (e.get('date') or '')[:10] == date]
+
+    cash_from_bills = sum(b.get('cash_amount', 0) or 0 for b in day_bills)
+    upi_from_bills = sum(b.get('upi_amount', 0) or 0 for b in day_bills)
+    cash_from_loans = sum(p['amount'] for p in day_payments if (p.get('method') or 'cash') == 'cash')
+    upi_from_loans = sum(p['amount'] for p in day_payments if p.get('method') == 'upi')
+    total_cash = cash_from_bills + cash_from_loans
+    total_upi = upi_from_bills + upi_from_loans
+
+    hamali = sum(e['amount'] for e in day_expenses if any(w in (e.get('category') or '').lower() for w in ['hamali', 'labor', 'labour']))
+    all_day_expenses = sum(e['amount'] for e in day_expenses)
+    other_expenses = all_day_expenses - hamali
+    expected_drawer = total_cash - all_day_expenses
+
+    item_map = {}
+    for b in day_bills:
+        for it in b['items']:
+            k = it['product_name']
+            item_map.setdefault(k, {"product_name": k, "unit": it.get('unit', ''), "quantity": 0, "amount": 0})
+            item_map[k]['quantity'] += it['quantity']
+            item_map[k]['amount'] += it['amount']
+    top_items = sorted(item_map.values(), key=lambda x: x['quantity'], reverse=True)[:10]
+
+    credit_issued = sum(b['balance_amount'] for b in day_bills)
+    credit_recovered = sum(p['amount'] for p in day_payments)
+
+    this_month_sales = sum(b['total_amount'] for b in bills_all if (b.get('date') or '')[:7] == ym)
+    prev_month_sales = sum(b['total_amount'] for b in bills_all if (b.get('date') or '')[:7] == prev_ym)
+    if prev_month_sales > 0:
+        mom_growth = (this_month_sales - prev_month_sales) / prev_month_sales * 100
+    else:
+        mom_growth = 100.0 if this_month_sales > 0 else 0.0
+    outstanding_credit = sum(b['balance_amount'] for b in bills_all if b['balance_amount'] > 0)
+
+    expiring, low_stock = [], []
+    todaydate = datetime.now(timezone.utc).date()
+    for p in products:
+        try:
+            d = (datetime.strptime((p.get('exp_date') or '')[:10], "%Y-%m-%d").date() - todaydate).days
+        except Exception:
+            d = 9999
+        if 0 <= d <= 60:
+            expiring.append({"name": p['name'], "exp_date": p['exp_date'], "days_left": d, "quantity": p['quantity'], "unit": p.get('unit', '')})
+        if p['quantity'] < 10:
+            low_stock.append({"name": p['name'], "quantity": p['quantity'], "unit": p.get('unit', '')})
+    expiring = sorted(expiring, key=lambda x: x['days_left'])
+
+    return {
+        "date": date,
+        "cash_flow": {
+            "cash_collected": total_cash, "upi_collected": total_upi,
+            "hamali_payouts": hamali, "other_expenses": other_expenses,
+            "expected_drawer_cash": expected_drawer, "total_collected": total_cash + total_upi,
+        },
+        "top_items": top_items,
+        "khata": {"issued_today": credit_issued, "recovered_today": credit_recovered},
+        "growth": {
+            "this_month_sales": this_month_sales, "prev_month_sales": prev_month_sales,
+            "mom_growth_pct": round(mom_growth, 1), "outstanding_market_credit": outstanding_credit,
+        },
+        "alerts": {
+            "expiring": expiring, "low_stock": low_stock,
+            "expiring_count": len(expiring), "low_stock_count": len(low_stock),
+        },
+    }
+
+
+# --- Government subsidy CSV sync (MT -> bags) ---
+def _parse_bag_size(name):
+    mtch = re.search(r"(\d+(?:\.\d+)?)\s*kg", name or "", re.I)
+    return float(mtch.group(1)) if mtch else 0
+
+def _norm_name(name):
+    return re.sub(r"\(.*?\)", "", name or "").strip().lower()
+
+def _parse_subsidy_csv(text):
+    for delim in [',', '\t']:
+        try:
+            rows = list(csv.DictReader(io.StringIO(text.strip()), delimiter=delim))
+            if rows and len(rows[0].keys()) > 1:
+                return rows
+        except Exception:
+            continue
+    return []
+
+def _build_subsidy_preview(text):
+    rows = _parse_subsidy_csv(text)
+    with get_conn() as conn:
+        products = [dict(r) for r in conn.execute("SELECT * FROM products").fetchall()]
+    by_norm = {_norm_name(p['name']): p for p in products}
+    result = []
+    for row in rows:
+        keys = {k.lower().strip(): k for k in row.keys()}
+        name = None
+        for nk in ['product name', 'product', 'name', 'item']:
+            if nk in keys:
+                name = row[keys[nk]]; break
+        if not name:
+            continue
+        sold_bags = None
+        note = ""
+        for cand in ['sold (bags)', 'sold bags', 'sold']:
+            if cand in keys and row[keys[cand]] not in (None, ''):
+                try:
+                    sold_bags = float(row[keys[cand]]); break
+                except Exception:
+                    pass
+        prod = by_norm.get(_norm_name(name))
+        if sold_bags is None:
+            for cand in ['sold (mt)', 'sold mt', 'mt', 'quantity (mt)', 'quantity']:
+                if cand in keys and row[keys[cand]] not in (None, ''):
+                    try:
+                        mt = float(row[keys[cand]])
+                        bag = (prod.get('bag_size_kg') if prod else 0) or _parse_bag_size(name)
+                        if bag > 0:
+                            sold_bags = mt * 1000 / bag
+                            note = f"{mt} MT / {bag}kg = {sold_bags:.0f} bags"
+                        else:
+                            note = "No bag size set - cannot convert MT"
+                        break
+                    except Exception:
+                        pass
+        sb = int(round(sold_bags)) if sold_bags is not None else 0
+        entry = {"product_name": name, "matched": bool(prod), "sold_bags": sb, "note": note}
+        if prod:
+            entry["product_id"] = prod['id']
+            entry["current_stock"] = prod['quantity']
+            entry["new_stock"] = prod['quantity'] - sb
+        else:
+            entry["note"] = (note + " | " if note else "") + "Not found in stock"
+        result.append(entry)
+    return result
+
+@api.post("/subsidy/preview")
+def subsidy_preview(payload: dict):
+    return {"rows": _build_subsidy_preview(payload.get("csv", ""))}
+
+@api.post("/subsidy/apply")
+def subsidy_apply(payload: dict):
+    rows = _build_subsidy_preview(payload.get("csv", ""))
+    applied = 0
+    with _lock, get_conn() as conn:
+        for r in rows:
+            if r.get("matched") and r.get("sold_bags", 0) > 0:
+                conn.execute("UPDATE products SET quantity = quantity - ? WHERE id=?",
+                             (int(r["sold_bags"]), r["product_id"]))
+                applied += 1
+    return {"applied": applied, "rows": rows}
 
 
 # --- Shop info ---

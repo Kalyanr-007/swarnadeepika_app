@@ -18,10 +18,11 @@ import bcrypt
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
+# MongoDB connection (fallback defaults let a fresh clone run without a .env file)
+mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+db_name = os.environ.get('DB_NAME', 'swarna_deepika_db')
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[db_name]
 
 # Create the main app
 app = FastAPI()
@@ -197,6 +198,7 @@ class LoanPayment(BaseModel):
     amount: float
     payment_date: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     notes: str = ""
+    method: str = "cash"  # cash or upi
 
 class LoanPaymentCreate(BaseModel):
     bill_id: str
@@ -1042,6 +1044,20 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+@app.on_event("startup")
+async def seed_default_admin():
+    """Seed the default admin user on first run so a fresh clone/local DB works out of the box."""
+    try:
+        existing = await db.users.find_one({"username": "admin"})
+        if not existing:
+            hashed = bcrypt.hashpw("swarna123".encode(), bcrypt.gensalt()).decode()
+            admin = User(username="admin", role="admin").model_dump()
+            admin["password_hash"] = hashed
+            await db.users.insert_one(admin)
+            logger.info("Seeded default admin (admin/swarna123)")
+    except Exception as e:
+        logger.warning(f"Admin seed skipped: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
