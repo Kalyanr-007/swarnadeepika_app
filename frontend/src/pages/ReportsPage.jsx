@@ -120,8 +120,8 @@ const ReportsPage = () => {
       {/* Header */}
       <div className="flex flex-wrap justify-between items-start gap-4 mb-6">
         <div>
-          <h1 className="font-heading text-2xl font-bold text-slate-800">Daily Report</h1>
-          <p className="font-telugu text-slate-500">రోజువారీ నివేదిక</p>
+          <h1 className="font-heading text-2xl font-bold text-slate-800">Farmer Report</h1>
+          <p className="font-telugu text-slate-500">రైతు రోజువారీ నివేదిక</p>
         </div>
         <div className="flex items-center gap-2 print:hidden">
           <Button variant="outline" size="icon" onClick={() => shiftDay(-1)} data-testid="prev-day-btn">

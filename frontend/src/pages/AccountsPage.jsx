@@ -9,6 +9,7 @@ import {
 import {
   TrendingUp, TrendingDown, IndianRupee, PiggyBank, Wallet,
   ArrowDownCircle, ArrowUpCircle, Scale, ExternalLink,
+  Users as UsersIcon, Store, Globe,
 } from "lucide-react";
 import { format } from "date-fns";
 import DrillMetricCard from "../components/DrillMetricCard";
@@ -26,13 +27,18 @@ const AccountsPage = () => {
   const [start, setStart] = useState(monthStart());
   const [end, setEnd] = useState(today());
   const [data, setData] = useState(null);
+  const [seg, setSeg] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const fetchSummary = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await axios.get(`${API}/reports/summary`, { params: { start_date: start, end_date: end } });
-      setData(res.data);
+      const [sum, segRes] = await Promise.all([
+        axios.get(`${API}/reports/summary`, { params: { start_date: start, end_date: end } }),
+        axios.get(`${API}/reports/accounts-segregated`, { params: { start_date: start, end_date: end } }),
+      ]);
+      setData(sum.data);
+      setSeg(segRes.data);
     } catch (e) { console.error(e); } finally { setLoading(false); }
   }, [start, end]);
 
@@ -101,7 +107,83 @@ const AccountsPage = () => {
             </Card>
           </div>
 
-          {/* Breakdown cards - hover to see the underlying data, click "Open …" to jump */}
+          {/* Segregated summary — Farmer side vs My side vs Overall */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+            <Card className="border-blue-200 bg-blue-50/50" data-testid="seg-farmer-card">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2 text-blue-800">
+                  <UsersIcon className="w-4 h-4" /> Farmer side
+                  <span className="font-telugu text-xs text-blue-600 ml-1">రైతు వైపు</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm space-y-1">
+                <SegRow label="Sales" v={rupee(seg?.farmer_side?.sales)} sub={`${seg?.farmer_side?.bill_count || 0} bills`} />
+                <SegRow label="Cash in" v={rupee(seg?.farmer_side?.cash_in)} strong />
+                <SegRow label="UPI in" v={rupee(seg?.farmer_side?.upi_in)} strong />
+                <SegRow label="Credit given" v={rupee(seg?.farmer_side?.credit_given)} tone="yellow" />
+                <SegRow label="Credit recovered" v={rupee(seg?.farmer_side?.credit_recovered)} tone="green" />
+                <a href="/reports" target="_blank" rel="noopener noreferrer"
+                  className="text-xs text-blue-700 hover:text-blue-800 inline-flex items-center gap-1 pt-1">
+                  Open Farmer Report <ExternalLink className="w-3 h-3" />
+                </a>
+              </CardContent>
+            </Card>
+
+            <Card className="border-slate-200 bg-slate-50/50" data-testid="seg-my-card">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2 text-slate-800">
+                  <Store className="w-4 h-4" /> My side
+                  <span className="font-telugu text-xs text-slate-500 ml-1">నా వైపు</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm space-y-1">
+                <SegRow label="Purchases" v={rupee(seg?.my_side?.purchases_total)} sub={`${seg?.my_side?.purchase_count || 0} entries`} />
+                <SegRow label="Expenses" v={rupee(seg?.my_side?.expenses)} sub={`${seg?.my_side?.expense_count || 0} entries`} tone="red" />
+                <SegRow label="Credit taken" v={rupee(seg?.my_side?.credit_taken)} tone="yellow" />
+                {seg?.my_side?.purchases_by_method && Object.keys(seg.my_side.purchases_by_method).length > 0 && (
+                  <div className="pt-1 border-t border-slate-200">
+                    <p className="text-[10px] uppercase text-slate-400 mb-0.5">Paid by</p>
+                    {Object.entries(seg.my_side.purchases_by_method).map(([m, amt]) => (
+                      <SegRow key={m} label={m} v={rupee(amt)} />
+                    ))}
+                  </div>
+                )}
+                <a href="/purchases" target="_blank" rel="noopener noreferrer"
+                  className="text-xs text-slate-700 hover:text-green-700 inline-flex items-center gap-1 pt-1">
+                  Open Purchases <ExternalLink className="w-3 h-3" />
+                </a>
+              </CardContent>
+            </Card>
+
+            <Card className={(seg?.overall?.net || 0) >= 0 ? "border-emerald-200 bg-emerald-50/50" : "border-orange-200 bg-orange-50/50"}
+              data-testid="seg-overall-card">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2 text-emerald-800">
+                  <Globe className="w-4 h-4" /> Overall
+                  <span className="font-telugu text-xs text-emerald-600 ml-1">మొత్తం</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm space-y-1">
+                <SegRow label="Money in" v={rupee(seg?.overall?.money_in)} tone="green" strong />
+                <SegRow label="Money out" v={rupee(seg?.overall?.money_out)} tone="red" strong />
+                <div className="pt-1 border-t border-emerald-200">
+                  <SegRow label="Net"
+                    v={rupee(seg?.overall?.net)}
+                    tone={(seg?.overall?.net || 0) >= 0 ? "green" : "red"}
+                    big />
+                </div>
+                <a href="/day-summary" target="_blank" rel="noopener noreferrer"
+                  className="text-xs text-emerald-700 hover:text-emerald-800 inline-flex items-center gap-1 pt-1">
+                  Open Day Book <ExternalLink className="w-3 h-3" />
+                </a>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Detailed breakdown cards - hover to see the underlying data, click "Open …" to jump */}
+          <p className="text-xs uppercase tracking-wider text-slate-400 font-semibold mb-2">
+            Detailed breakdown — hover any card to see underlying rows
+          </p>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             <DrillMetricCard icon={IndianRupee} color="green" label="Revenue (Sales)" te="అమ్మకాలు"
               value={rupee(profit?.revenue)} sub={`${data?.sales.count || 0} bills`} testid="metric-revenue"
@@ -118,7 +200,7 @@ const AccountsPage = () => {
                   </div>
                 ),
                 totalKey: "total_amount", totalFormatter: rupee,
-                seeAllHref: "/reports", seeAllLabel: "Open Reports",
+                seeAllHref: "/reports", seeAllLabel: "Open Farmer Report",
                 emptyText: "No bills in this range.",
               }}
             />
@@ -432,3 +514,20 @@ const CategoryDrillRow = ({ c, start, end, rupee, fmtDay, idx }) => {
 };
 
 export default AccountsPage;
+
+// Small helper for segregated summary rows
+const SegRow = ({ label, v, sub, tone, strong, big }) => {
+  const toneCls = tone === "green" ? "text-emerald-700"
+    : tone === "red" ? "text-red-600"
+    : tone === "yellow" ? "text-yellow-700"
+    : "text-slate-800";
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <div className="min-w-0">
+        <span className="text-slate-600 capitalize">{label}</span>
+        {sub && <span className="text-[10px] text-slate-400 ml-1">({sub})</span>}
+      </div>
+      <span className={`${toneCls} ${strong || big ? "font-semibold" : ""} ${big ? "text-base" : ""}`}>{v}</span>
+    </div>
+  );
+};

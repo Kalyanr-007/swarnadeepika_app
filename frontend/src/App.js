@@ -14,6 +14,7 @@ import PurchasesPage from "./pages/PurchasesPage";
 import AccountsPage from "./pages/AccountsPage";
 import DaySummaryPage from "./pages/DaySummaryPage";
 import DataPage from "./pages/DataPage";
+import SuppliersPage from "./pages/SuppliersPage";
 import Layout from "./components/Layout";
 import { Toaster } from "./components/ui/sonner";
 
@@ -75,6 +76,7 @@ function App() {
                     <Route path="/customers" element={<CustomersPage />} />
                     <Route path="/loans" element={<LoansPage />} />
                     <Route path="/purchases" element={<PurchasesPage />} />
+                    <Route path="/suppliers" element={<SuppliersPage />} />
                     <Route path="/expenses" element={<ExpensesPage />} />
                     <Route path="/accounts" element={<AccountsPage />} />
                     <Route path="/reports" element={<ReportsPage />} />

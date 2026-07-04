@@ -10,21 +10,43 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "../components/ui/table";
+import { Badge } from "../components/ui/badge";
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription,
+} from "../components/ui/dialog";
 import { toast } from "sonner";
-import { Truck, Plus, Trash2, PackagePlus } from "lucide-react";
+import {
+  Truck, Trash2, PackagePlus, CheckCircle2, PackageOpen, CreditCard,
+} from "lucide-react";
 import { format } from "date-fns";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const today = () => new Date().toISOString().slice(0, 10);
 const monthStart = () => today().slice(0, 8) + "01";
+const endOfDay = (d) => (d && d.length === 10 ? `${d}T23:59:59` : d);
+
+const PAYMENT_METHODS = [
+  { v: "cash", label: "Cash", te: "నగదు" },
+  { v: "credit", label: "Credit", te: "అప్పు" },
+  { v: "upi", label: "UPI", te: "UPI" },
+  { v: "account_transfer", label: "Account Transfer", te: "బ్యాంక్" },
+];
+
+const rupee = (n) => `₹${(n || 0).toLocaleString()}`;
 
 const PurchasesPage = () => {
   const [purchases, setPurchases] = useState([]);
   const [products, setProducts] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [start, setStart] = useState(monthStart());
   const [end, setEnd] = useState(today());
 
+  // Form state
   const [supplier, setSupplier] = useState("");
+  const [supplierPhone, setSupplierPhone] = useState("");
+  const [supplierMatches, setSupplierMatches] = useState([]);
+  const [supplierFocused, setSupplierFocused] = useState(false);
   const [productId, setProductId] = useState("none");
   const [productName, setProductName] = useState("");
   const [quantity, setQuantity] = useState("");
@@ -32,27 +54,61 @@ const PurchasesPage = () => {
   const [price, setPrice] = useState("");
   const [batchNo, setBatchNo] = useState("");
   const [date, setDate] = useState(today());
+  const [paymentMethod, setPaymentMethod] = useState("cash");
+  const [refNo, setRefNo] = useState("");
+  const [paidAmount, setPaidAmount] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // Declare-in-stock dialog
+  const [declareTarget, setDeclareTarget] = useState(null); // purchase being declared
+  const [decCat, setDecCat] = useState("");
+  const [decMrp, setDecMrp] = useState("");
+  const [decSell, setDecSell] = useState("");
+  const [decMfg, setDecMfg] = useState("");
+  const [decExp, setDecExp] = useState("");
+  const [decBag, setDecBag] = useState("");
+  const [decNameTe, setDecNameTe] = useState("");
+  const [declaring, setDeclaring] = useState(false);
 
   const fetchPurchases = useCallback(async () => {
     try {
-      const res = await axios.get(`${API}/purchases`, { params: { start_date: start, end_date: end } });
+      const res = await axios.get(`${API}/purchases`, { params: { start_date: start, end_date: endOfDay(end) } });
       setPurchases(res.data);
     } catch (e) { console.error(e); }
   }, [start, end]);
 
   useEffect(() => {
     fetchPurchases();
-    axios.get(`${API}/products`).then((r) => setProducts(r.data)).catch(() => {});
+    axios.get(`${API}/products/admin`).then((r) => setProducts(r.data)).catch(() => {});
+    axios.get(`${API}/suppliers`).then((r) => setSuppliers(r.data)).catch(() => {});
+    axios.get(`${API}/categories`).then((r) => setCategories(r.data)).catch(() => {});
   }, [fetchPurchases]);
 
+  // Supplier autocomplete: filter as user types
+  useEffect(() => {
+    if (!supplier) { setSupplierMatches([]); return; }
+    const q = supplier.toLowerCase();
+    setSupplierMatches(suppliers.filter((s) => (s.name || "").toLowerCase().includes(q)).slice(0, 6));
+  }, [supplier, suppliers]);
+
+  const pickSupplier = (s) => {
+    setSupplier(s.name);
+    setSupplierPhone(s.phone || "");
+    setSupplierMatches([]);
+    setSupplierFocused(false);
+  };
+
   const total = purchases.reduce((s, p) => s + p.total_cost, 0);
+  const notDeclared = purchases.filter((p) => !p.declared_in_stock).length;
+  const openCredit = purchases.reduce((s, p) => s + (p.balance_amount || 0), 0);
 
   const onSelectProduct = (id) => {
     setProductId(id);
     if (id && id !== "none") {
       const p = products.find((x) => x.id === id);
       if (p) { setProductName(p.name); setUnit(p.unit); }
+    } else {
+      setProductName("");
     }
   };
 
@@ -63,29 +119,79 @@ const PurchasesPage = () => {
     if (!productName.trim()) return toast.error("Enter a product name");
     if (!qty || qty <= 0) return toast.error("Enter a valid quantity");
     if (!pr || pr <= 0) return toast.error("Enter a valid purchase price");
+    if ((paymentMethod === "upi" || paymentMethod === "account_transfer") && !refNo.trim()) {
+      return toast.error("Reference number required for UPI / Bank transfer");
+    }
     setSaving(true);
     try {
+      const linkedSup = suppliers.find((s) => s.name.toLowerCase() === supplier.trim().toLowerCase());
+      const totalCost = pr * qty;
+      const paid = paidAmount === "" ? (paymentMethod === "credit" ? 0 : totalCost) : parseFloat(paidAmount);
       await axios.post(`${API}/purchases`, {
-        supplier, product_id: productId === "none" ? null : productId,
-        product_name: productName.trim(), quantity: qty, unit,
-        purchase_price: pr, batch_no: batchNo,
+        supplier: supplier.trim(),
+        supplier_id: linkedSup?.id || null,
+        supplier_phone: supplierPhone,
+        product_id: productId === "none" ? null : productId,
+        product_name: productName.trim(),
+        quantity: qty, unit,
+        purchase_price: pr,
+        batch_no: batchNo,
         date: new Date(date + "T12:00:00").toISOString(),
+        payment_method: paymentMethod,
+        reference_number: refNo,
+        paid_amount: paid,
+        update_stock: false,
       });
-      toast.success(productId !== "none" ? "Purchase recorded & stock updated" : "Purchase recorded");
-      setSupplier(""); setProductId("none"); setProductName(""); setQuantity(""); setPrice(""); setBatchNo("");
+      toast.success("Purchase recorded. Click 'Declare in Stock' to add it to inventory.");
+      setSupplier(""); setSupplierPhone(""); setProductId("none"); setProductName("");
+      setQuantity(""); setPrice(""); setBatchNo("");
+      setPaymentMethod("cash"); setRefNo(""); setPaidAmount("");
       fetchPurchases();
-      axios.get(`${API}/products`).then((r) => setProducts(r.data)).catch(() => {});
+      // refresh suppliers because backend auto-creates new ones
+      axios.get(`${API}/suppliers`).then((r) => setSuppliers(r.data)).catch(() => {});
     } catch (err) {
       toast.error(err.response?.data?.detail || "Failed to add purchase");
     } finally { setSaving(false); }
   };
 
   const remove = async (id) => {
+    if (!window.confirm("Delete this purchase? If it was declared in stock, that stock will be reversed.")) return;
     try {
       await axios.delete(`${API}/purchases/${id}`);
-      toast.success("Deleted (stock reversed)");
+      toast.success("Deleted");
       fetchPurchases();
+      axios.get(`${API}/products/admin`).then((r) => setProducts(r.data)).catch(() => {});
     } catch { toast.error("Failed to delete"); }
+  };
+
+  const openDeclare = (p) => {
+    setDeclareTarget(p);
+    setDecCat(""); setDecMrp(""); setDecSell(""); setDecMfg(""); setDecExp("");
+    setDecBag(""); setDecNameTe("");
+  };
+
+  const submitDeclare = async () => {
+    if (!declareTarget) return;
+    // Only require category if this is a NEW product
+    if (!declareTarget.product_id && !decCat) return toast.error("Category is required for a new product");
+    setDeclaring(true);
+    try {
+      await axios.post(`${API}/purchases/${declareTarget.id}/declare-in-stock`, {
+        category_id: decCat || null,
+        mrp: decMrp ? parseFloat(decMrp) : null,
+        selling_price: decSell ? parseFloat(decSell) : null,
+        mfg_date: decMfg || null,
+        exp_date: decExp || null,
+        bag_size_kg: decBag ? parseFloat(decBag) : 0,
+        name_telugu: decNameTe,
+      });
+      toast.success(`Added ${declareTarget.quantity} ${declareTarget.unit} of ${declareTarget.product_name} to stock`);
+      setDeclareTarget(null);
+      fetchPurchases();
+      axios.get(`${API}/products/admin`).then((r) => setProducts(r.data)).catch(() => {});
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Declare failed");
+    } finally { setDeclaring(false); }
   };
 
   const fmtDate = (d) => { try { return format(new Date(d), "dd MMM yyyy"); } catch { return d; } };
@@ -98,7 +204,7 @@ const PurchasesPage = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Add form */}
+        {/* Form */}
         <Card className="lg:col-span-1 h-fit">
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
@@ -106,18 +212,47 @@ const PurchasesPage = () => {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <form onSubmit={addPurchase} className="space-y-3">
-              <div>
+            <form onSubmit={addPurchase} className="space-y-3" autoComplete="off">
+              {/* Supplier autocomplete */}
+              <div className="relative">
                 <Label>Supplier</Label>
-                <Input value={supplier} onChange={(e) => setSupplier(e.target.value)}
-                  placeholder="Supplier name" data-testid="purchase-supplier-input" />
+                <Input value={supplier}
+                  onChange={(e) => { setSupplier(e.target.value); setSupplierFocused(true); }}
+                  onFocus={() => setSupplierFocused(true)}
+                  onBlur={() => setTimeout(() => setSupplierFocused(false), 200)}
+                  placeholder="Type to search or add new"
+                  data-testid="purchase-supplier-input" />
+                {supplierFocused && supplierMatches.length > 0 && (
+                  <div className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-56 overflow-auto"
+                    data-testid="supplier-autocomplete">
+                    {supplierMatches.map((s) => (
+                      <button type="button" key={s.id}
+                        onClick={() => pickSupplier(s)}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-0"
+                        data-testid={`supplier-suggest-${s.id}`}>
+                        <p className="text-sm font-medium text-slate-800">{s.name}</p>
+                        <p className="text-xs text-slate-500">
+                          {s.phone || "no phone"} · {(s.items_supplied || []).join(", ") || "no items tagged"}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
+              <div>
+                <Label>Supplier phone</Label>
+                <Input value={supplierPhone}
+                  onChange={(e) => setSupplierPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                  placeholder="10 digits (stored for autocomplete)"
+                  data-testid="purchase-supplier-phone" />
+              </div>
+
               <div>
                 <Label>Existing Product (restock)</Label>
                 <Select value={productId} onValueChange={onSelectProduct}>
-                  <SelectTrigger data-testid="purchase-product-select"><SelectValue placeholder="Select to restock" /></SelectTrigger>
+                  <SelectTrigger data-testid="purchase-product-select"><SelectValue placeholder="Restock or new" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">— New / not in stock list —</SelectItem>
+                    <SelectItem value="none">— New / not in stock yet —</SelectItem>
                     {products.map((p) => (
                       <SelectItem key={p.id} value={p.id}>{p.name} ({p.quantity} {p.unit})</SelectItem>
                     ))}
@@ -138,7 +273,7 @@ const PurchasesPage = () => {
                 <div>
                   <Label>Unit</Label>
                   <Input value={unit} onChange={(e) => setUnit(e.target.value)}
-                    placeholder="bag / kg" data-testid="purchase-unit-input" />
+                    placeholder="bag / L / kg" data-testid="purchase-unit-input" />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -153,6 +288,36 @@ const PurchasesPage = () => {
                     placeholder="Optional" data-testid="purchase-batch-input" />
                 </div>
               </div>
+
+              {/* Payment */}
+              <div>
+                <Label>Payment Method *</Label>
+                <Select value={paymentMethod} onValueChange={(v) => { setPaymentMethod(v); if (v !== "upi" && v !== "account_transfer") setRefNo(""); if (v !== "credit") setPaidAmount(""); }}>
+                  <SelectTrigger data-testid="purchase-payment-method"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {PAYMENT_METHODS.map((m) => (
+                      <SelectItem key={m.v} value={m.v}>{m.label} · {m.te}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {(paymentMethod === "upi" || paymentMethod === "account_transfer") && (
+                <div>
+                  <Label>Reference Number *</Label>
+                  <Input value={refNo} onChange={(e) => setRefNo(e.target.value)}
+                    placeholder={paymentMethod === "upi" ? "UPI txn ID" : "UTR / cheque no"}
+                    data-testid="purchase-refno" />
+                </div>
+              )}
+              {paymentMethod === "credit" && (
+                <div>
+                  <Label>Amount paid now (₹, optional)</Label>
+                  <Input type="number" value={paidAmount} onChange={(e) => setPaidAmount(e.target.value)}
+                    placeholder="Partial payment amount"
+                    data-testid="purchase-paid-amount" />
+                </div>
+              )}
+
               <div>
                 <Label>Date</Label>
                 <Input type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)}
@@ -160,8 +325,11 @@ const PurchasesPage = () => {
               </div>
               <Button type="submit" disabled={saving} className="w-full bg-green-700 hover:bg-green-800"
                 data-testid="add-purchase-btn">
-                {saving ? "Saving..." : "Add Purchase"}
+                {saving ? "Saving..." : "Save Purchase (does NOT touch stock yet)"}
               </Button>
+              <p className="text-[11px] text-slate-500">
+                Stock is only updated after you click <b>Declare in Stock</b> in the history table.
+              </p>
             </form>
           </CardContent>
         </Card>
@@ -179,9 +347,19 @@ const PurchasesPage = () => {
             </div>
           </CardHeader>
           <CardContent className="p-0">
-            <div className="px-6 py-3 bg-blue-50 border-y border-blue-100 flex justify-between">
-              <span className="text-sm text-slate-600">Total purchases</span>
-              <span className="font-bold text-blue-700" data-testid="purchase-total">₹{total.toLocaleString()}</span>
+            <div className="grid grid-cols-3 border-y border-slate-200 divide-x divide-slate-200 text-sm">
+              <div className="p-3 flex justify-between bg-blue-50">
+                <span className="text-slate-600">Total purchases</span>
+                <span className="font-bold text-blue-700" data-testid="purchase-total">{rupee(total)}</span>
+              </div>
+              <div className="p-3 flex justify-between bg-amber-50">
+                <span className="text-slate-600">Not yet in stock</span>
+                <span className="font-bold text-amber-700" data-testid="purchase-not-declared">{notDeclared}</span>
+              </div>
+              <div className="p-3 flex justify-between bg-red-50">
+                <span className="text-slate-600">Open credit</span>
+                <span className="font-bold text-red-700" data-testid="purchase-open-credit">{rupee(openCredit)}</span>
+              </div>
             </div>
             <Table className="data-table">
               <TableHeader>
@@ -190,8 +368,9 @@ const PurchasesPage = () => {
                   <TableHead>Product</TableHead>
                   <TableHead>Supplier</TableHead>
                   <TableHead className="text-right">Qty</TableHead>
-                  <TableHead className="text-right">Cost/unit</TableHead>
                   <TableHead className="text-right">Total</TableHead>
+                  <TableHead>Payment</TableHead>
+                  <TableHead>Stock</TableHead>
                   <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
@@ -199,11 +378,43 @@ const PurchasesPage = () => {
                 {purchases.map((p) => (
                   <TableRow key={p.id} data-testid={`purchase-row-${p.id}`}>
                     <TableCell className="text-slate-500 whitespace-nowrap">{fmtDate(p.date)}</TableCell>
-                    <TableCell className="font-medium">{p.product_name}</TableCell>
-                    <TableCell className="text-slate-500">{p.supplier}</TableCell>
+                    <TableCell>
+                      <p className="font-medium">{p.product_name}</p>
+                      {p.batch_no && <p className="text-xs text-slate-400">Batch: {p.batch_no}</p>}
+                    </TableCell>
+                    <TableCell className="text-slate-500">
+                      {p.supplier || "—"}
+                      {p.supplier_phone && <p className="text-xs text-slate-400">{p.supplier_phone}</p>}
+                    </TableCell>
                     <TableCell className="text-right">{p.quantity} {p.unit}</TableCell>
-                    <TableCell className="text-right">₹{p.purchase_price.toLocaleString()}</TableCell>
-                    <TableCell className="text-right font-semibold text-blue-700">₹{p.total_cost.toLocaleString()}</TableCell>
+                    <TableCell className="text-right font-semibold text-blue-700">{rupee(p.total_cost)}</TableCell>
+                    <TableCell>
+                      <div className="flex flex-col gap-1">
+                        <Badge variant={p.payment_method === "credit" ? "destructive" : "secondary"} className="w-fit text-[10px]">
+                          {p.payment_method || "cash"}
+                        </Badge>
+                        {p.reference_number && <p className="text-[10px] text-slate-400">Ref: {p.reference_number}</p>}
+                        {p.balance_amount > 0 && (
+                          <p className="text-[10px] text-red-600 inline-flex items-center gap-1">
+                            <CreditCard className="w-3 h-3" /> {rupee(p.balance_amount)} due
+                          </p>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {p.declared_in_stock ? (
+                        <Badge className="bg-green-100 text-green-700 hover:bg-green-100 text-[10px]"
+                          data-testid={`declared-${p.id}`}>
+                          <CheckCircle2 className="w-3 h-3 mr-1" /> In stock
+                        </Badge>
+                      ) : (
+                        <Button size="sm" variant="outline" className="h-7 border-amber-300 text-amber-700 hover:bg-amber-50"
+                          onClick={() => openDeclare(p)}
+                          data-testid={`declare-btn-${p.id}`}>
+                          <PackageOpen className="w-3 h-3 mr-1" /> Declare in Stock
+                        </Button>
+                      )}
+                    </TableCell>
                     <TableCell className="text-right">
                       <Button variant="ghost" size="icon" onClick={() => remove(p.id)}
                         className="text-slate-400 hover:text-red-600" data-testid={`delete-purchase-${p.id}`}>
@@ -223,6 +434,72 @@ const PurchasesPage = () => {
           </CardContent>
         </Card>
       </div>
+
+      {/* Declare-in-stock dialog */}
+      <Dialog open={!!declareTarget} onOpenChange={(o) => { if (!o) setDeclareTarget(null); }}>
+        <DialogContent data-testid="declare-dialog">
+          <DialogHeader>
+            <DialogTitle>Declare in Stock</DialogTitle>
+            <DialogDescription>
+              {declareTarget?.product_id
+                ? `Add ${declareTarget?.quantity} ${declareTarget?.unit} to the existing stock of "${declareTarget?.product_name}".`
+                : `Create a new product entry for "${declareTarget?.product_name}" with the details below, then add the ${declareTarget?.quantity} ${declareTarget?.unit} to inventory.`}
+            </DialogDescription>
+          </DialogHeader>
+          {!declareTarget?.product_id && (
+            <div className="space-y-3">
+              <div>
+                <Label>Category *</Label>
+                <Select value={decCat} onValueChange={setDecCat}>
+                  <SelectTrigger data-testid="declare-category"><SelectValue placeholder="Choose category" /></SelectTrigger>
+                  <SelectContent>
+                    {categories.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>MRP (₹)</Label>
+                  <Input type="number" value={decMrp} onChange={(e) => setDecMrp(e.target.value)} placeholder="e.g. 650" data-testid="declare-mrp" />
+                </div>
+                <div>
+                  <Label>Selling price (₹)</Label>
+                  <Input type="number" value={decSell} onChange={(e) => setDecSell(e.target.value)} placeholder="e.g. 600" data-testid="declare-sell" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Mfg date</Label>
+                  <Input type="date" value={decMfg} onChange={(e) => setDecMfg(e.target.value)} data-testid="declare-mfg" />
+                </div>
+                <div>
+                  <Label>Expiry date</Label>
+                  <Input type="date" value={decExp} onChange={(e) => setDecExp(e.target.value)} data-testid="declare-exp" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Bag size (kg) — for subsidy CSV sync</Label>
+                  <Input type="number" value={decBag} onChange={(e) => setDecBag(e.target.value)} placeholder="e.g. 45" data-testid="declare-bag" />
+                </div>
+                <div>
+                  <Label>Telugu name</Label>
+                  <Input value={decNameTe} onChange={(e) => setDecNameTe(e.target.value)} placeholder="Optional" data-testid="declare-tename" />
+                </div>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeclareTarget(null)}>Cancel</Button>
+            <Button onClick={submitDeclare} disabled={declaring} className="bg-green-700 hover:bg-green-800"
+              data-testid="declare-confirm-btn">
+              {declaring ? "Declaring..." : "Declare in Stock"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

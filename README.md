@@ -9,6 +9,8 @@ app for a fertilizer, pesticide & seed shop.
 
 Default login: **admin / swarna123**
 
+> 📖 **Documentation:** [User Manual](./MANUAL.md) · [Developer Guide](./DEVELOPER.md)
+
 ---
 
 ## One-click setup

@@ -162,6 +162,51 @@ backend:
           agent: "main"
           comment: "Fixed 4 bugs: Product INSERT was missing bag_size_kg; Customer INSERT missing aadhaar; Bill INSERT missing cash_amount/upi_amount; loan_payments INSERT missing method. Added /api/reports/day-summary and /api/subsidy/{preview,apply} endpoints. Also added /api/data/{info,export,reset-auth,backup/download/{name}} - verified via TestClient (info shows sqlite backend + db_path, export streams zip, reset-auth backs up + wipes users + re-seeds admin). Not tested through subagent because desktop backend is not run by supervisor."
 
+  - task: "Purchases: payment methods + supplier autocomplete + Declare-in-Stock flow"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "Purchase model now stores payment_method (cash|credit|upi|account_transfer), reference_number (required for upi/account_transfer client-side), paid_amount, balance_amount, declared_in_stock. POST /api/purchases no longer auto-updates stock (unless update_stock=true is passed for legacy paths). New endpoint POST /api/purchases/{id}/declare-in-stock creates the product if product_id is missing (requires category_id) or increments existing product stock. Delete now reverses stock only when declared. Also POST /api/purchases auto-upserts a Supplier record when a new supplier name is used. Verified via curl end-to-end (create->declare->supplier auto-created)."
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED (23/23 tests) - All purchase and declare-in-stock flows working correctly. (1) POST /api/purchases with payment_method='upi' correctly creates purchase with declared_in_stock=false, balance_amount=0, paid_amount=3000 (full payment for non-credit). (2) POST /api/purchases with payment_method='credit' correctly defaults paid_amount=0, balance_amount=5000. Partial credit payment (paid_amount=2000) correctly calculates balance_amount=3000. (3) Supplier auto-creation working: 'BrandNewSupplier' automatically created with notes='auto-created from purchase'. (4) Stock NOT updated on purchase creation (verified product not in stock yet). (5) POST /api/purchases/{id}/declare-in-stock NEW product path: correctly requires category_id (400 without it), creates new product with correct quantity=20, purchase_price=150, mrp=180, selling_price=170. Idempotent (400 on second call). Purchase.declared_in_stock correctly updated to true. (6) EXISTING product path: declare-in-stock with empty body works (category not required), correctly increments product quantity by 5 (50→55). (7) DELETE purchase with stock reversal: undeclared purchase deletion does NOT affect stock (verified unchanged). Declared purchase deletion correctly decrements stock by 7 (57→50). All payment methods, stock flows, and supplier auto-creation working as designed."
+
+  - task: "Suppliers CRUD"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "GET/POST/PUT/DELETE /api/suppliers. GET accepts ?q= for name/phone substring filter used by autocomplete. Model: name, phone (10 digits, client-validated), address, items_supplied (list of Seeds/Fertilizers/Pesticides/Other), notes."
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED (11/11 tests) - All supplier CRUD operations working correctly. (1) POST /api/suppliers creates supplier with all fields (name, phone='9111111111', address='Vijayawada', items_supplied=['Fertilizers','Pesticides'], notes='Bulk') and returns id + all fields. (2) GET /api/suppliers returns list containing newly created supplier. (3) GET /api/suppliers?q=agro correctly filters by name substring (case-insensitive). (4) GET /api/suppliers?q=911 correctly filters by phone substring. (5) GET /api/suppliers/{id} returns correct supplier (200). GET with wrong id correctly returns 404. (6) PUT /api/suppliers/{id} with {notes:'Updated'} successfully updates notes field. PUT with empty body correctly returns 400. (7) DELETE /api/suppliers/{id} returns 200 with success=true. Second DELETE correctly returns 404. All CRUD operations, filtering, and error handling working as designed."
+
+  - task: "Segregated Accounts endpoint"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "GET /api/reports/accounts-segregated?start_date=&end_date= returns {farmer_side, my_side, overall}: farmer_side has sales/bill_count/cash_in/upi_in/credit_given/credit_recovered; my_side has purchases_total/purchase_count/purchases_by_method/credit_taken/expenses/expense_count; overall has money_in/money_out/net. Verified via curl - numbers agree with /reports/summary."
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED (1/1 test) - Segregated accounts endpoint working correctly. GET /api/reports/accounts-segregated returns correct structure with all required keys: start_date, end_date, farmer_side (sales, bill_count, cash_in, upi_in, credit_given, credit_recovered), my_side (purchases_total, purchase_count, purchases_by_method as dict, credit_taken, expenses, expense_count), overall (money_in, money_out, net). Verified purchases_by_method correctly includes 'upi' key with amount ₹8000 (accumulated from test purchases). All calculations and data aggregation working as designed."
+
   - task: "Data Management endpoints (cloud) - info / export / reset-auth / backup-download"
     implemented: true
     working: true
@@ -176,6 +221,9 @@ backend:
         - working: true
           agent: "testing"
           comment: "✅ PASSED (54/55 tests, 98.2% success) - All Data Management endpoints working correctly. (1) GET /api/data/info: Returns correct structure with backend='mongodb', db_name='swarna_deepika_db', backup_dir='/app/backend/data/backups', counts for all 8 collections (products, categories, customers, bills, loan_payments, expenses, purchases, users), and recent_backups list. (2) GET /api/data/export: Returns valid ZIP file (Content-Type: application/zip, Content-Disposition with attachment filename swarna_deepika_export_*.zip) containing all required CSVs (products, categories, customers, bills, loan_payments, expenses, purchases, users, _metadata.json). VERIFIED: users.csv does NOT contain password_hash column (security requirement met). _metadata.json is valid JSON with exported_at, collections, db_name keys. (3) POST /api/data/reset-auth: FULL WORKFLOW VERIFIED - Wrong confirm_phrase correctly returns 400, wrong admin password correctly returns 401. Correct request creates backup (backup_20260704_094742.zip, 3253 bytes), returns success=true with backup_file (absolute path /app/backend/data/backups/backup_*.zip), backup_filename, backup_size_bytes>0, users_deleted>=1, reseeded_admin (username=admin, password=swarna123), and message with backup path. CRITICAL VERIFICATION: Business data counts UNCHANGED after reset (products=3, customers=3, bills=6 before and after). Users count correctly changed to 1 (only admin). Login with admin/swarna123 works after reset. (4) GET /api/data/backup/download/{name}: Successfully downloads backup ZIP with valid content (all CSVs present). Nonexistent file correctly returns 404. Minor: Path traversal attempt (../etc/passwd) returns 404 instead of expected 400 - this is acceptable as FastAPI routing blocks it before reaching validation code (security still working). (5) Sanity check: Business operations (create product, customer, bill) all working correctly after reset-auth. All existing endpoints (31 tests) continue to pass. No breaking changes detected."
+        - working: true
+          agent: "testing"
+          comment: "✅ ITERATION-3 UPDATE - GET /api/data/export now includes suppliers.csv (verified in Iteration-3 testing). ZIP contains 9 CSVs: products, categories, customers, bills, loan_payments, expenses, purchases, suppliers, users + _metadata.json. Suppliers CSV has data (3 rows in test). All files present and valid."
 
   - task: "Products with bag_size_kg field"
     implemented: true
@@ -305,7 +353,10 @@ metadata:
   run_ui: false
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Purchases: payment methods + supplier autocomplete + Declare-in-Stock flow"
+    - "Suppliers CRUD"
+    - "Segregated Accounts endpoint"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -319,3 +370,8 @@ agent_communication:
       message: "✅ ALL BACKEND TESTS PASSED (31/31 - 100% success rate). Comprehensive testing completed covering: (1) Auth with admin/swarna123 ✅, (2) Products with bag_size_kg ✅, (3) Customers with 12-digit Aadhaar ✅, (4) Bills with split Cash+UPI payment ✅, (5) Loan payments with method (cash/upi) ✅, (6) Day Summary endpoint with complete structure ✅, (7) Government subsidy CSV sync (preview + apply with MT→bags conversion) ✅, (8) Regression tests for all existing endpoints ✅. Minor fix applied: Added 'method' field to LoanPayment response model. All features working correctly. Stock management verified. No critical issues found. Ready for production use."
     - agent: "testing"
       message: "✅ DATA MANAGEMENT ENDPOINTS TESTED (54/55 tests passed, 98.2% success rate). All 4 new endpoints working correctly: (1) GET /api/data/info ✅ - Returns correct structure with all required keys and collection counts. (2) GET /api/data/export ✅ - Returns valid ZIP with all CSVs, users.csv correctly excludes password_hash, _metadata.json valid. (3) POST /api/data/reset-auth ✅ - Full workflow verified: creates backup, wipes users, re-seeds admin, business data UNCHANGED (products/customers/bills counts identical before/after), login works after reset, negative tests (wrong phrase/password) return correct error codes. (4) GET /api/data/backup/download/{name} ✅ - Downloads valid backup ZIP, nonexistent file returns 404. (5) Sanity check ✅ - Business operations (create product/customer/bill) work after reset. Minor note: Path traversal test returns 404 instead of 400 (FastAPI routing blocks before validation - security still working). TOTAL: 55 tests run (31 existing + 24 new), 54 passed. All critical functionality verified. No breaking changes. Ready for production."
+    - agent: "main"
+      message: "Iteration 3 additions - please test these NEW endpoints only: (A) POST /api/purchases now records the paperwork without touching stock (unless legacy update_stock=true is passed). Body accepts payment_method (cash|credit|upi|account_transfer), reference_number, paid_amount (default: full for cash/upi/transfer, 0 for credit), supplier, supplier_id, supplier_phone. Response includes declared_in_stock=false, balance_amount, and creates a supplier record if the name is new. (B) POST /api/purchases/{id}/declare-in-stock body {category_id?, mrp?, selling_price?, mfg_date?, exp_date?, bag_size_kg?, name_telugu?}. If purchase has product_id → increments that product's quantity. If purchase.product_id is None → REQUIRES category_id, creates a new product and adds the qty. Sets declared_in_stock=true. Idempotent (400 on second call). (C) DELETE /api/purchases/{id} — reverses stock only if declared_in_stock=true. (D) /api/suppliers CRUD: POST creates, GET lists (?q=… filters by name substring or phone), PUT partially updates, DELETE. Model: name (required), phone, address, items_supplied (list), notes. Suppliers auto-created by POST /api/purchases with a new name should have notes='auto-created from purchase'. (E) GET /api/reports/accounts-segregated?start_date=&end_date= returns {farmer_side:{sales,bill_count,cash_in,upi_in,credit_given,credit_recovered}, my_side:{purchases_total,purchase_count,purchases_by_method:dict,credit_taken,expenses,expense_count}, overall:{money_in,money_out,net}}. Please verify with a end-to-end scenario: create supplier X, create purchase (new product, payment_method=upi, reference_number=UPI123), declare-in-stock (new product path with category_id), verify product now exists in /api/products/admin with correct qty, verify /api/reports/accounts-segregated shows the purchase under my_side.purchases_by_method.upi, and verify GET /api/data/export now includes suppliers.csv."
+    - agent: "testing"
+      message: "✅ ITERATION-3 BACKEND TESTS PASSED (51/51 - 100% success rate). All new endpoints working correctly: (A) Suppliers CRUD ✅ (11 tests) - POST creates supplier with all fields, GET lists and filters by name/phone substring (?q=), GET/{id} returns single supplier (404 for wrong id), PUT updates fields (400 for empty body), DELETE removes supplier (404 on second delete). (B) Purchases with payment methods ✅ (6 tests) - POST with payment_method='upi' creates purchase with declared_in_stock=false, paid_amount=3000, balance_amount=0. POST with payment_method='credit' defaults paid_amount=0, balance_amount=5000. Partial credit payment correctly calculates balance. Supplier auto-creation working ('BrandNewSupplier' created with notes='auto-created from purchase'). Stock NOT updated on purchase creation. (C) Declare-in-Stock NEW product path ✅ (5 tests) - Requires category_id (400 without it), creates product with correct quantity=20, purchase_price=150, mrp=180, selling_price=170. Idempotent (400 on second call). Purchase.declared_in_stock updated to true. (D) Declare-in-Stock EXISTING product path ✅ (8 tests) - Empty body works (category not required), increments quantity by 5 (50→55). DELETE purchase reverses stock (55→50). (E) DELETE purchase stock reversal ✅ (13 tests) - Undeclared purchase deletion does NOT affect stock. Declared purchase deletion correctly decrements stock by 7. (F) Segregated Accounts ✅ (1 test) - Returns correct structure with farmer_side, my_side (purchases_by_method dict includes 'upi':₹8000), overall. (G) Data export ✅ (4 tests) - ZIP now includes suppliers.csv with 3 rows, total 9 CSVs + _metadata.json. All Iteration-3 features working as designed. No issues found."
+

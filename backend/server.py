@@ -610,6 +610,8 @@ class ExpenseCreate(BaseModel):
 
 class PurchaseCreate(BaseModel):
     supplier: Optional[str] = ""
+    supplier_id: Optional[str] = None
+    supplier_phone: Optional[str] = ""
     product_id: Optional[str] = None
     product_name: str
     quantity: int
@@ -617,7 +619,26 @@ class PurchaseCreate(BaseModel):
     purchase_price: float
     batch_no: Optional[str] = ""
     date: Optional[str] = None
-    update_stock: bool = True
+    # Payment
+    payment_method: str = "cash"  # cash | credit | upi | account_transfer
+    reference_number: Optional[str] = ""  # for UPI / account_transfer
+    paid_amount: Optional[float] = None  # if None -> full paid for cash/upi/transfer, 0 for credit
+    # Stock declaration: purchase is now recorded first, stock updated on explicit declare
+    update_stock: bool = False
+
+class SupplierCreate(BaseModel):
+    name: str
+    phone: Optional[str] = ""
+    address: Optional[str] = ""
+    items_supplied: List[str] = []  # e.g. ["Seeds", "Fertilizers", "Pesticides"]
+    notes: Optional[str] = ""
+
+class SupplierUpdate(BaseModel):
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    items_supplied: Optional[List[str]] = None
+    notes: Optional[str] = None
 
 @api_router.post("/expenses")
 async def create_expense(e: ExpenseCreate):
@@ -648,26 +669,115 @@ async def delete_expense(expense_id: str):
 
 @api_router.post("/purchases")
 async def create_purchase(p: PurchaseCreate):
+    total_cost = p.purchase_price * p.quantity
+    # Default paid_amount based on method
+    if p.paid_amount is None:
+        paid = 0.0 if p.payment_method == "credit" else total_cost
+    else:
+        paid = p.paid_amount
+    balance = max(0.0, total_cost - paid)
+
     obj = {
         "id": str(uuid.uuid4()),
         "supplier": p.supplier or "",
+        "supplier_id": p.supplier_id,
+        "supplier_phone": p.supplier_phone or "",
         "product_id": p.product_id,
         "product_name": p.product_name,
         "quantity": p.quantity,
         "unit": p.unit,
         "purchase_price": p.purchase_price,
-        "total_cost": p.purchase_price * p.quantity,
+        "total_cost": total_cost,
         "batch_no": p.batch_no or "",
         "date": p.date or datetime.now(timezone.utc).isoformat(),
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "payment_method": p.payment_method,
+        "reference_number": p.reference_number or "",
+        "paid_amount": paid,
+        "balance_amount": balance,
+        "declared_in_stock": False,
     }
     await db.purchases.insert_one(dict(obj))
+
+    # Only auto-update stock when caller explicitly opted in (legacy support)
     if p.product_id and p.update_stock:
         await db.products.update_one(
             {"id": p.product_id},
             {"$inc": {"quantity": p.quantity}, "$set": {"purchase_price": p.purchase_price}},
         )
+        obj["declared_in_stock"] = True
+        await db.purchases.update_one({"id": obj["id"]}, {"$set": {"declared_in_stock": True}})
+
+    # If supplier name is new, upsert a minimal supplier record for future autocomplete
+    if p.supplier and not p.supplier_id:
+        existing = await db.suppliers.find_one({"name": p.supplier})
+        if not existing:
+            await db.suppliers.insert_one({
+                "id": str(uuid.uuid4()), "name": p.supplier,
+                "phone": p.supplier_phone or "", "address": "",
+                "items_supplied": [], "notes": "auto-created from purchase",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
     return obj
+
+
+class DeclareStockRequest(BaseModel):
+    category_id: Optional[str] = None  # required when creating a new product
+    mrp: Optional[float] = None
+    selling_price: Optional[float] = None
+    mfg_date: Optional[str] = None
+    exp_date: Optional[str] = None
+    bag_size_kg: Optional[float] = 0
+    name_telugu: Optional[str] = ""
+
+
+@api_router.post("/purchases/{purchase_id}/declare-in-stock")
+async def declare_purchase_in_stock(purchase_id: str, req: DeclareStockRequest):
+    """Move a recorded purchase into inventory. If product_id is set, increments its
+    quantity. If not, creates a new product using the purchase details + the extra
+    fields in the request body, then increments its quantity."""
+    purchase = await db.purchases.find_one({"id": purchase_id}, {"_id": 0})
+    if not purchase:
+        raise HTTPException(404, "Purchase not found")
+    if purchase.get("declared_in_stock"):
+        raise HTTPException(400, "Already declared in stock")
+
+    product_id = purchase.get("product_id")
+    if product_id:
+        # Existing product - just increment
+        prod = await db.products.find_one({"id": product_id})
+        if not prod:
+            raise HTTPException(404, "Linked product no longer exists")
+        await db.products.update_one(
+            {"id": product_id},
+            {"$inc": {"quantity": purchase["quantity"]},
+             "$set": {"purchase_price": purchase["purchase_price"]}},
+        )
+    else:
+        # New product - need category
+        if not req.category_id:
+            raise HTTPException(400, "category_id is required to create a new product")
+        new_prod = {
+            "id": str(uuid.uuid4()),
+            "name": purchase["product_name"],
+            "name_telugu": req.name_telugu or "",
+            "category_id": req.category_id,
+            "batch_no": purchase.get("batch_no") or "",
+            "mfg_date": req.mfg_date or "",
+            "exp_date": req.exp_date or "",
+            "purchase_price": purchase["purchase_price"],
+            "mrp": req.mrp if req.mrp is not None else purchase["purchase_price"],
+            "selling_price": req.selling_price if req.selling_price is not None else purchase["purchase_price"],
+            "quantity": purchase["quantity"],
+            "unit": purchase.get("unit") or "piece",
+            "bag_size_kg": req.bag_size_kg or 0,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.products.insert_one(dict(new_prod))
+        product_id = new_prod["id"]
+
+    await db.purchases.update_one({"id": purchase_id}, {"$set": {"declared_in_stock": True, "product_id": product_id}})
+    return {"success": True, "product_id": product_id, "quantity_added": purchase["quantity"]}
 
 @api_router.get("/purchases")
 async def get_purchases(start_date: Optional[str] = None, end_date: Optional[str] = None):
@@ -682,9 +792,121 @@ async def delete_purchase(purchase_id: str):
     if not purchase:
         raise HTTPException(status_code=404, detail="Purchase not found")
     await db.purchases.delete_one({"id": purchase_id})
-    if purchase.get("product_id"):
+    # Only reverse stock if the purchase was actually declared into stock
+    if purchase.get("declared_in_stock") and purchase.get("product_id"):
         await db.products.update_one({"id": purchase["product_id"]}, {"$inc": {"quantity": -purchase["quantity"]}})
     return {"success": True}
+
+
+# ---------------- Suppliers ----------------
+@api_router.post("/suppliers")
+async def create_supplier(s: SupplierCreate):
+    obj = {
+        "id": str(uuid.uuid4()),
+        "name": s.name,
+        "phone": s.phone or "",
+        "address": s.address or "",
+        "items_supplied": s.items_supplied or [],
+        "notes": s.notes or "",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.suppliers.insert_one(dict(obj))
+    return obj
+
+@api_router.get("/suppliers")
+async def list_suppliers(q: Optional[str] = None):
+    items = await db.suppliers.find({}, {"_id": 0}).sort("name", 1).to_list(5000)
+    if q:
+        ql = q.lower()
+        items = [x for x in items if ql in (x.get("name") or "").lower() or ql in (x.get("phone") or "")]
+    return items
+
+@api_router.get("/suppliers/{sid}")
+async def get_supplier(sid: str):
+    s = await db.suppliers.find_one({"id": sid}, {"_id": 0})
+    if not s:
+        raise HTTPException(404, "Supplier not found")
+    return s
+
+@api_router.put("/suppliers/{sid}")
+async def update_supplier(sid: str, u: SupplierUpdate):
+    upd = {k: v for k, v in u.model_dump().items() if v is not None}
+    if not upd:
+        raise HTTPException(400, "Nothing to update")
+    r = await db.suppliers.update_one({"id": sid}, {"$set": upd})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Supplier not found")
+    return await db.suppliers.find_one({"id": sid}, {"_id": 0})
+
+@api_router.delete("/suppliers/{sid}")
+async def delete_supplier(sid: str):
+    r = await db.suppliers.delete_one({"id": sid})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "Supplier not found")
+    return {"success": True}
+
+
+# ---------------- Segregated Accounts (Farmer / My-side / Overall) ----------------
+@api_router.get("/reports/accounts-segregated")
+async def accounts_segregated(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    today_s = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    start_date = start_date or today_s
+    end_date = end_date or today_s
+
+    bills = [b for b in await db.bills.find({}, {"_id": 0}).to_list(5000) if _in_range(b["date"], start_date, end_date)]
+    loans = [p for p in await db.loan_payments.find({}, {"_id": 0}).to_list(5000) if _in_range(p.get("payment_date", ""), start_date, end_date)]
+    purchases = [p for p in await db.purchases.find({}, {"_id": 0}).to_list(5000) if _in_range(p["date"], start_date, end_date)]
+    expenses = [e for e in await db.expenses.find({}, {"_id": 0}).to_list(5000) if _in_range(e["date"], start_date, end_date)]
+
+    # Farmer side (money from farmers)
+    farmer_sales = sum(b["total_amount"] for b in bills)
+    farmer_cash_in = (
+        sum(b.get("cash_amount", 0) or 0 for b in bills)
+        + sum(b.get("paid_amount", 0) for b in bills if not b.get("cash_amount") and not b.get("upi_amount") and b.get("payment_type") == "cash")
+        + sum(p["amount"] for p in loans if (p.get("method") or "cash") == "cash")
+    )
+    farmer_upi_in = (
+        sum(b.get("upi_amount", 0) or 0 for b in bills)
+        + sum(p["amount"] for p in loans if p.get("method") == "upi")
+    )
+    farmer_credit_given = sum(b.get("balance_amount", 0) for b in bills)
+    farmer_credit_recovered = sum(p["amount"] for p in loans)
+
+    # My side (money we spend)
+    my_purchases_total = sum(p["total_cost"] for p in purchases)
+    my_purchases_by_method = {}
+    for p in purchases:
+        m = p.get("payment_method") or "cash"
+        my_purchases_by_method.setdefault(m, 0)
+        my_purchases_by_method[m] += p.get("paid_amount", 0) or 0
+    my_credit_taken = sum(p.get("balance_amount", 0) for p in purchases)
+    my_expenses_total = sum(e["amount"] for e in expenses)
+
+    # Overall
+    total_in = farmer_cash_in + farmer_upi_in
+    total_out = (
+        sum(p.get("paid_amount", 0) or 0 for p in purchases)
+        + my_expenses_total
+    )
+
+    return {
+        "start_date": start_date, "end_date": end_date,
+        "farmer_side": {
+            "sales": farmer_sales, "bill_count": len(bills),
+            "cash_in": farmer_cash_in, "upi_in": farmer_upi_in,
+            "credit_given": farmer_credit_given, "credit_recovered": farmer_credit_recovered,
+        },
+        "my_side": {
+            "purchases_total": my_purchases_total, "purchase_count": len(purchases),
+            "purchases_by_method": my_purchases_by_method,
+            "credit_taken": my_credit_taken,
+            "expenses": my_expenses_total, "expense_count": len(expenses),
+        },
+        "overall": {
+            "money_in": total_in, "money_out": total_out,
+            "net": total_in - total_out,
+        },
+    }
 
 @api_router.get("/reports/summary")
 async def get_summary(start_date: Optional[str] = None, end_date: Optional[str] = None):
@@ -1018,7 +1240,7 @@ BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
 COLLECTIONS_TO_EXPORT = [
     "products", "categories", "customers", "bills",
-    "loan_payments", "expenses", "purchases", "users",
+    "loan_payments", "expenses", "purchases", "suppliers", "users",
 ]
 
 USER_SAFE_FIELDS = ["id", "username", "role", "created_at"]  # never export password hashes
