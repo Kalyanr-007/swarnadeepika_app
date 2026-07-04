@@ -54,7 +54,19 @@ See /app/memory/test_credentials.md — admin / swarna123
 - Added: backend/.env.example, frontend/.env.example (committed). server.py now has safe fallbacks (mongodb://localhost:27017 + swarna_deepika_db) and auto-seeds admin/swarna123 on startup.
 - Root README rewritten with the one-click desktop/run_local.bat flow + cloud flow.
 - desktop/backend/app.py brought up to parity with cloud: fixed 4 INSERT bugs (product bag_size_kg, customer aadhaar, bill cash_amount+upi_amount, loan_payment method) and added /api/reports/day-summary + /api/subsidy/{preview,apply}. Verified with FastAPI TestClient.
-- Backend testing subagent ran 31/31 test cases passing (login, product bag_size, aadhaar, split cash/upi bill, loan method, day-summary shape, subsidy MT-to-bags, regressions).
+- Backend testing subagent ran 31/31 test cases passing.
+
+## 2026-07-04 — Cross-platform installer + Data & Backup module
+- Added `install.sh` (Linux/macOS/EC2 — apt/dnf/yum/apk/brew aware, installs Python3/Node20/Yarn/MongoDB7, sets up .env, builds+starts in dev or --prod mode) and `stop.sh`.
+- Added `install.bat` (Windows — auto-installs Python3.12 + NodeLTS via winget, sets up .env from templates, delegates to `desktop/run_local.bat` for offline SQLite backend on 127.0.0.1:8756).
+- Data & Backup module (`/api/data/*` on both backends + `/data` page in UI):
+  - GET /api/data/info — shows where the DB lives + row counts + list of recent backups
+  - GET /api/data/export — streams a ZIP with a CSV per collection; users.csv strips password_hash
+  - POST /api/data/reset-auth — safe reset: writes a full backup ZIP to disk first, wipes users, re-seeds admin/swarna123, returns backup absolute path and size. Business data (products/customers/bills/loans/purchases/expenses) preserved.
+  - GET /api/data/backup/download/{name} — regex-guarded backup download
+  - New DataPage.jsx (sidebar "Data & Backup") with big warning box, confirm phrase "RESET AUTH", admin password re-entry, backup-path display + copy-to-clipboard + download link.
+- Frontend polish: Aadhaar customer field validated to exactly 12 digits (already in previous session, verified); new Hamali Quick Payout card on Expenses page (amber highlight) that logs an expense with category=Hamali → Day Book's hamali_payouts picks it up automatically.
+- Backend testing subagent ran 55/55 test cases passing (31 existing + 24 new Data endpoints).
 
 ## Notes
 - Daily report date matching uses stored ISO date prefix (UTC), consistent with dashboard.
