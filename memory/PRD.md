@@ -69,10 +69,18 @@ See /app/memory/test_credentials.md — admin / swarna123
 - Backend testing subagent ran 55/55 test cases passing (31 existing + 24 new Data endpoints).
 
 ## 2026-07-04 — Drill-down metrics on Dashboard + Accounts
-- Added shared `DrillMetricCard` component (frontend/src/components/DrillMetricCard.jsx) that wraps a metric with a HoverCard popover: on hover, lazily fetches and shows top-N underlying rows with a running total and a "Open [Section] ↗" link that opens the source page in a new tab.
-- Dashboard: every stat card now drills — Today's Sales → today's bills; Cash Received → today's cash portion per bill; Credit Given → today's bills with balance > 0; Pending Loans → all bills with balance > 0; Total Products → stock list; Total Customers → customers list. Low Stock and Recent Bills cards gained "Open Stock ↗" / "Open Reports ↗" header links.
-- Accounts page: all 8 metric cards drill (Revenue, COGS, Gross Profit, Expenses, Cash In, Cash Out, Purchases, Credit Given) — each shows the actual rows/lines with totals and a see-all link (Reports / Purchases / Expenses / Loans / Billing / Day Book depending on the metric). Expenses-by-Category rows also drill into the individual expenses in that category.
-- Bugfix while wiring: server-side date filter uses string $lte on ISO timestamps, so end_date="YYYY-MM-DD" excluded today's records; introduced endOfDay()/endOfToday() helpers that append "T23:59:59".
+- Added shared `DrillMetricCard` component that lazily fetches underlying rows on hover, shows top-N with running total + a "Open [Section] ↗" link that opens the source page in a new tab.
+- Wired to all Dashboard stats and all Accounts metrics + Expenses-by-Category table rows.
+
+## 2026-07-04 — Segregated business view + Privacy Mode + Purchase v2
+- **Sidebar** reorganised into 4 groups: Farmer/Selling side (Dashboard, Billing, Customers, Loans, Stock, Farmer Report), My side (Purchases, Suppliers, Expenses), Overall & System (Day Book, Accounts), System (Data & Backup, Settings). Added **Privacy Mode** eye toggle (Ctrl+Shift+P) at the top of the sidebar that hides My-side and System sections while farmers are at the counter. Persists in localStorage.
+- **Purchases v2**: model + endpoint updates: `payment_method` (cash|credit|upi|account_transfer), `reference_number` (required client-side for upi/account_transfer), `paid_amount`, `balance_amount`, `declared_in_stock` flag. `POST /api/purchases` now records paperwork WITHOUT touching stock. New `POST /api/purchases/{id}/declare-in-stock` creates the product if missing (needs category_id) or increments existing product; DELETE reverses stock only if declared. Auto-creates a supplier record when a new supplier name is used.
+- **Suppliers**: new model + CRUD (`/api/suppliers`) with items_supplied (Seeds/Fertilizers/Pesticides/Other), phone (10-digit client), address, notes. Supplier autocomplete on the Purchases form (typeahead).
+- **Segregated Accounts**: new `GET /api/reports/accounts-segregated` returns farmer_side / my_side / overall aggregates. Accounts page now shows 3 summary cards on top (Farmer / My / Overall) with side-specific "Open …" links, above the existing detailed hover-drill grid.
+- **Reports renamed to Farmer Report** everywhere in the UI (route stays /reports).
+- **Hamali Quick Payout** dedicated amber-highlighted card on Expenses page (from previous iteration).
+- **Docs**: MANUAL.md (shop-owner user manual, 17 sections, covers Privacy Mode + Declare-in-Stock flow + subsidy CSV + reset auth) and DEVELOPER.md (stack, architecture, data model, API surface, design decisions, setup on Windows/Linux/EC2, interview cheat sheet).
+- Backend testing: 51/51 new tests passing (suppliers CRUD, purchase payment methods, declare-in-stock both new-product and existing-product paths, delete reversal, segregated accounts, export includes suppliers.csv).
 
 ## Notes
 - Daily report date matching uses stored ISO date prefix (UTC), consistent with dashboard.
