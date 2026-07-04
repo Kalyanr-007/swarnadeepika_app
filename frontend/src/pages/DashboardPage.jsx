@@ -8,11 +8,16 @@ import {
   Users, 
   AlertTriangle,
   TrendingUp,
-  Receipt
+  Receipt,
+  ExternalLink
 } from "lucide-react";
 import { format } from "date-fns";
+import DrillMetricCard from "../components/DrillMetricCard";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+const today = () => new Date().toISOString().slice(0, 10);
+const endOfToday = () => today() + "T23:59:59";
+const rupee = (n) => `₹${(n || 0).toLocaleString()}`;
 
 const DashboardPage = () => {
   const [stats, setStats] = useState(null);
@@ -48,54 +53,136 @@ const DashboardPage = () => {
 
   const statCards = [
     {
-      title: "Today's Sales",
-      titleTelugu: "ఈ రోజు అమ్మకాలు",
-      value: `₹${stats?.today_sales?.toLocaleString() || 0}`,
-      icon: IndianRupee,
-      color: "bg-green-500",
-      bgColor: "bg-green-50"
+      title: "Today's Sales", titleTelugu: "ఈ రోజు అమ్మకాలు",
+      value: rupee(stats?.today_sales), sub: `${stats?.total_bills_today || 0} bills`,
+      icon: IndianRupee, color: "green", testid: "stat-today-sales",
+      drill: {
+        title: "Today's bills",
+        fetcher: async () => (await axios.get(`${API}/bills`, { params: { start_date: today(), end_date: endOfToday() } })).data,
+        renderRow: (b) => (
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="font-medium text-slate-800 truncate">#{b.bill_no} · {b.customer_name}</p>
+              <p className="text-xs text-slate-500">{b.village} · {b.payment_type}</p>
+            </div>
+            <p className="font-semibold text-green-700 shrink-0">{rupee(b.total_amount)}</p>
+          </div>
+        ),
+        totalKey: "total_amount", totalFormatter: rupee,
+        seeAllHref: "/reports", seeAllLabel: "Open Reports",
+        emptyText: "No bills today.",
+      },
     },
     {
-      title: "Cash Received",
-      titleTelugu: "నగదు",
-      value: `₹${stats?.today_cash?.toLocaleString() || 0}`,
-      icon: TrendingUp,
-      color: "bg-emerald-500",
-      bgColor: "bg-emerald-50"
+      title: "Cash Received", titleTelugu: "నగదు",
+      value: rupee(stats?.today_cash), sub: "cash portion of today's bills",
+      icon: TrendingUp, color: "emerald", testid: "stat-today-cash",
+      drill: {
+        title: "Cash collected today",
+        fetcher: async () => {
+          const b = (await axios.get(`${API}/bills`, { params: { start_date: today(), end_date: endOfToday() } })).data;
+          return b.filter((x) => (x.cash_amount || x.paid_amount || 0) > 0).map((x) => ({
+            ...x, effective_cash: x.cash_amount || (x.payment_type === "cash" ? (x.paid_amount || x.total_amount) : 0),
+          })).filter((x) => x.effective_cash > 0);
+        },
+        renderRow: (b) => (
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="font-medium text-slate-800 truncate">#{b.bill_no} · {b.customer_name}</p>
+              <p className="text-xs text-slate-500">{b.village}</p>
+            </div>
+            <p className="font-semibold text-emerald-700 shrink-0">{rupee(b.effective_cash)}</p>
+          </div>
+        ),
+        totalKey: "effective_cash", totalFormatter: rupee,
+        seeAllHref: "/day-summary", seeAllLabel: "Open Day Book",
+        emptyText: "No cash collected today.",
+      },
     },
     {
-      title: "Credit Given",
-      titleTelugu: "అప్పు ఇచ్చారు",
-      value: `₹${stats?.today_credit?.toLocaleString() || 0}`,
-      icon: CreditCard,
-      color: "bg-yellow-500",
-      bgColor: "bg-yellow-50"
+      title: "Credit Given", titleTelugu: "అప్పు ఇచ్చారు",
+      value: rupee(stats?.today_credit), sub: "unpaid balance today",
+      icon: CreditCard, color: "yellow", testid: "stat-today-credit",
+      drill: {
+        title: "Credit given today",
+        fetcher: async () => {
+          const b = (await axios.get(`${API}/bills`, { params: { start_date: today(), end_date: endOfToday() } })).data;
+          return b.filter((x) => (x.balance_amount || 0) > 0);
+        },
+        renderRow: (b) => (
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="font-medium text-slate-800 truncate">#{b.bill_no} · {b.customer_name}</p>
+              <p className="text-xs text-slate-500">{b.village}</p>
+            </div>
+            <p className="font-semibold text-yellow-700 shrink-0">{rupee(b.balance_amount)}</p>
+          </div>
+        ),
+        totalKey: "balance_amount", totalFormatter: rupee,
+        seeAllHref: "/loans", seeAllLabel: "Open Loans",
+        emptyText: "No credit issued today.",
+      },
     },
     {
-      title: "Pending Loans",
-      titleTelugu: "మొత్తం బకాయి",
-      value: `₹${stats?.total_pending_loans?.toLocaleString() || 0}`,
-      subtext: `${stats?.pending_loan_count || 0} customers`,
-      icon: CreditCard,
-      color: "bg-orange-500",
-      bgColor: "bg-orange-50"
+      title: "Pending Loans", titleTelugu: "మొత్తం బకాయి",
+      value: rupee(stats?.total_pending_loans), sub: `${stats?.pending_loan_count || 0} customers`,
+      icon: CreditCard, color: "orange", testid: "stat-pending-loans",
+      drill: {
+        title: "Bills with pending balance",
+        fetcher: async () => (await axios.get(`${API}/loans/pending`)).data,
+        renderRow: (b) => (
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="font-medium text-slate-800 truncate">#{b.bill_no} · {b.customer_name}</p>
+              <p className="text-xs text-slate-500">{b.village}</p>
+            </div>
+            <p className="font-semibold text-orange-600 shrink-0">{rupee(b.balance_amount)}</p>
+          </div>
+        ),
+        totalKey: "balance_amount", totalFormatter: rupee,
+        seeAllHref: "/loans", seeAllLabel: "Open Loans",
+        emptyText: "No pending loans — great!",
+      },
     },
     {
-      title: "Total Products",
-      titleTelugu: "మొత్తం ఉత్పత్తులు",
-      value: stats?.total_products || 0,
-      icon: Package,
-      color: "bg-blue-500",
-      bgColor: "bg-blue-50"
+      title: "Total Products", titleTelugu: "మొత్తం ఉత్పత్తులు",
+      value: stats?.total_products?.toLocaleString() || "0", sub: "in stock",
+      icon: Package, color: "blue", testid: "stat-total-products",
+      drill: {
+        title: "Products in stock",
+        fetcher: async () => (await axios.get(`${API}/products`)).data,
+        renderRow: (p) => (
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="font-medium text-slate-800 truncate">{p.name}</p>
+              <p className="text-xs text-slate-500">Batch: {p.batch_no || "—"}</p>
+            </div>
+            <p className="font-semibold text-blue-700 shrink-0">{p.quantity} {p.unit}</p>
+          </div>
+        ),
+        seeAllHref: "/stock", seeAllLabel: "Open Stock",
+        emptyText: "No products yet.",
+      },
     },
     {
-      title: "Total Customers",
-      titleTelugu: "మొత్తం కస్టమర్లు",
-      value: stats?.total_customers || 0,
-      icon: Users,
-      color: "bg-purple-500",
-      bgColor: "bg-purple-50"
-    }
+      title: "Total Customers", titleTelugu: "మొత్తం కస్టమర్లు",
+      value: stats?.total_customers?.toLocaleString() || "0", sub: "registered",
+      icon: Users, color: "purple", testid: "stat-total-customers",
+      drill: {
+        title: "Customers",
+        fetcher: async () => (await axios.get(`${API}/customers`)).data,
+        renderRow: (c) => (
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="font-medium text-slate-800 truncate">{c.name}</p>
+              <p className="text-xs text-slate-500 truncate">{c.village} · {c.phone || "—"}</p>
+            </div>
+          </div>
+        ),
+        seeAllHref: "/customers", seeAllLabel: "Open Customers",
+        emptyText: "No customers yet.",
+      },
+    },
   ];
 
   return (
@@ -115,28 +202,20 @@ const DashboardPage = () => {
         </div>
       </div>
 
-      {/* Stats Grid */}
+      {/* Stats Grid - hover any card to see the underlying data, click "Open …" to jump */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {statCards.map((card, index) => (
-          <Card key={index} className="stat-card border-0 shadow-sm">
-            <CardContent className="p-5">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-sm font-medium text-slate-500">{card.title}</p>
-                  <p className="font-telugu text-xs text-slate-400">{card.titleTelugu}</p>
-                  <p className="font-heading text-2xl font-bold text-slate-800 mt-2">
-                    {card.value}
-                  </p>
-                  {card.subtext && (
-                    <p className="text-xs text-slate-500 mt-1">{card.subtext}</p>
-                  )}
-                </div>
-                <div className={`${card.bgColor} p-3 rounded-xl`}>
-                  <card.icon className={`w-6 h-6 text-${card.color.replace('bg-', '')}`} style={{ color: card.color.includes('green') ? '#22c55e' : card.color.includes('yellow') ? '#eab308' : card.color.includes('orange') ? '#f97316' : card.color.includes('blue') ? '#3b82f6' : card.color.includes('purple') ? '#a855f7' : card.color.includes('emerald') ? '#10b981' : '#6b7280' }} />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+        {statCards.map((card) => (
+          <DrillMetricCard
+            key={card.testid}
+            icon={card.icon}
+            color={card.color}
+            label={card.title}
+            te={card.titleTelugu}
+            value={card.value}
+            sub={card.sub}
+            testid={card.testid}
+            drill={card.drill}
+          />
         ))}
       </div>
 
@@ -145,10 +224,16 @@ const DashboardPage = () => {
         {/* Low Stock Alert */}
         <Card className="border-0 shadow-sm">
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <AlertTriangle className="w-5 h-5 text-red-500" />
-              <span>Low Stock Alert</span>
-              <span className="font-telugu text-sm text-slate-400 font-normal ml-2">తక్కువ స్టాక్</span>
+            <CardTitle className="flex items-center justify-between text-lg">
+              <span className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-red-500" />
+                <span>Low Stock Alert</span>
+                <span className="font-telugu text-sm text-slate-400 font-normal ml-2">తక్కువ స్టాక్</span>
+              </span>
+              <a href="/stock" target="_blank" rel="noopener noreferrer"
+                className="text-xs font-medium text-green-700 hover:text-green-800 inline-flex items-center gap-1">
+                Open Stock <ExternalLink className="w-3.5 h-3.5" />
+              </a>
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -187,10 +272,16 @@ const DashboardPage = () => {
         {/* Recent Bills */}
         <Card className="border-0 shadow-sm">
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Receipt className="w-5 h-5 text-green-600" />
-              <span>Recent Bills</span>
-              <span className="font-telugu text-sm text-slate-400 font-normal ml-2">ఇటీవలి బిల్లులు</span>
+            <CardTitle className="flex items-center justify-between text-lg">
+              <span className="flex items-center gap-2">
+                <Receipt className="w-5 h-5 text-green-600" />
+                <span>Recent Bills</span>
+                <span className="font-telugu text-sm text-slate-400 font-normal ml-2">ఇటీవలి బిల్లులు</span>
+              </span>
+              <a href="/reports" target="_blank" rel="noopener noreferrer"
+                className="text-xs font-medium text-green-700 hover:text-green-800 inline-flex items-center gap-1">
+                Open Reports <ExternalLink className="w-3.5 h-3.5" />
+              </a>
             </CardTitle>
           </CardHeader>
           <CardContent>

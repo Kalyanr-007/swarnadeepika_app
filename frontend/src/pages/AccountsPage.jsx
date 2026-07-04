@@ -8,13 +8,19 @@ import {
 } from "../components/ui/table";
 import {
   TrendingUp, TrendingDown, IndianRupee, PiggyBank, Wallet,
-  ArrowDownCircle, ArrowUpCircle, Scale,
+  ArrowDownCircle, ArrowUpCircle, Scale, ExternalLink,
 } from "lucide-react";
 import { format } from "date-fns";
+import DrillMetricCard from "../components/DrillMetricCard";
+import {
+  HoverCard, HoverCardContent, HoverCardTrigger,
+} from "../components/ui/hover-card";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const today = () => new Date().toISOString().slice(0, 10);
 const monthStart = () => today().slice(0, 8) + "01";
+// server side filters do string <= against stored ISO date-times, so extend end date to end-of-day.
+const endOfDay = (d) => (d && d.length === 10 ? `${d}T23:59:59` : d);
 
 const AccountsPage = () => {
   const [start, setStart] = useState(monthStart());
@@ -95,16 +101,204 @@ const AccountsPage = () => {
             </Card>
           </div>
 
-          {/* Breakdown cards */}
+          {/* Breakdown cards - hover to see the underlying data, click "Open …" to jump */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-            <MetricCard icon={IndianRupee} color="green" label="Revenue (Sales)" te="అమ్మకాలు" value={rupee(profit?.revenue)} sub={`${data?.sales.count || 0} bills`} testid="metric-revenue" />
-            <MetricCard icon={PiggyBank} color="slate" label="Cost of Goods" te="వస్తువుల ధర" value={rupee(profit?.cogs)} sub="stock sold @ cost" testid="metric-cogs" />
-            <MetricCard icon={TrendingUp} color="blue" label="Gross Profit" te="స్థూల లాభం" value={rupee(profit?.gross_profit)} sub="revenue − cost" testid="metric-gross" />
-            <MetricCard icon={TrendingDown} color="red" label="Expenses" te="ఖర్చులు" value={rupee(data?.expenses.total)} sub={`${data?.expenses.count || 0} entries`} testid="metric-expenses" />
-            <MetricCard icon={ArrowDownCircle} color="emerald" label="Cash In" te="వచ్చిన నగదు" value={rupee(cash?.inflow)} sub="sales paid + loans collected" testid="metric-cashin" />
-            <MetricCard icon={ArrowUpCircle} color="orange" label="Cash Out" te="వెళ్లిన నగదు" value={rupee(cash?.outflow)} sub="purchases + expenses" testid="metric-cashout" />
-            <MetricCard icon={Wallet} color="blue" label="Purchases" te="కొనుగోళ్లు" value={rupee(data?.purchases.total)} sub={`${data?.purchases.count || 0} entries`} testid="metric-purchases" />
-            <MetricCard icon={IndianRupee} color="yellow" label="Credit Given" te="అప్పు ఇచ్చినది" value={rupee(data?.sales.credit_given)} sub="unpaid this period" testid="metric-credit" />
+            <DrillMetricCard icon={IndianRupee} color="green" label="Revenue (Sales)" te="అమ్మకాలు"
+              value={rupee(profit?.revenue)} sub={`${data?.sales.count || 0} bills`} testid="metric-revenue"
+              drill={{
+                title: "Bills in this period",
+                fetcher: async () => (await axios.get(`${API}/bills`, { params: { start_date: start, end_date: endOfDay(end) } })).data,
+                renderRow: (b) => (
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-medium text-slate-800 truncate">#{b.bill_no} · {b.customer_name}</p>
+                      <p className="text-xs text-slate-500">{fmtDay(b.date)} · {b.payment_type}</p>
+                    </div>
+                    <p className="font-semibold text-green-700 shrink-0">{rupee(b.total_amount)}</p>
+                  </div>
+                ),
+                totalKey: "total_amount", totalFormatter: rupee,
+                seeAllHref: "/reports", seeAllLabel: "Open Reports",
+                emptyText: "No bills in this range.",
+              }}
+            />
+
+            <DrillMetricCard icon={PiggyBank} color="slate" label="Cost of Goods" te="వస్తువుల ధర"
+              value={rupee(profit?.cogs)} sub="stock sold @ cost" testid="metric-cogs"
+              drill={{
+                title: "Items sold (COGS lines)",
+                fetcher: async () => {
+                  const bills = (await axios.get(`${API}/bills`, { params: { start_date: start, end_date: endOfDay(end) } })).data;
+                  const prods = (await axios.get(`${API}/products/admin`)).data;
+                  const costOf = Object.fromEntries(prods.map((p) => [p.id, p.purchase_price || 0]));
+                  const map = {};
+                  bills.forEach((b) => (b.items || []).forEach((it) => {
+                    const c = (costOf[it.product_id] || 0) * (it.quantity || 0);
+                    if (!c) return;
+                    map[it.product_name] = (map[it.product_name] || 0) + c;
+                  }));
+                  return Object.entries(map)
+                    .map(([name, cost]) => ({ name, cost }))
+                    .sort((a, b) => b.cost - a.cost);
+                },
+                renderRow: (r) => (
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate text-slate-800">{r.name}</p>
+                    <p className="font-semibold text-slate-700 shrink-0">{rupee(r.cost)}</p>
+                  </div>
+                ),
+                totalKey: "cost", totalFormatter: rupee,
+                seeAllHref: "/purchases", seeAllLabel: "Open Purchases",
+                emptyText: "No cost data.",
+              }}
+            />
+
+            <DrillMetricCard icon={TrendingUp} color="blue" label="Gross Profit" te="స్థూల లాభం"
+              value={rupee(profit?.gross_profit)} sub="revenue − cost" testid="metric-gross"
+              drill={{
+                title: "How gross profit was built",
+                fetcher: async () => ([
+                  { k: "Revenue (bills)", v: profit?.revenue || 0 },
+                  { k: "− Cost of Goods", v: -(profit?.cogs || 0) },
+                  { k: "= Gross Profit", v: profit?.gross_profit || 0, bold: true },
+                ]),
+                renderRow: (r) => (
+                  <div className={`flex items-center justify-between gap-2 ${r.bold ? "font-semibold" : ""}`}>
+                    <p className="truncate text-slate-800">{r.k}</p>
+                    <p className={`shrink-0 ${r.v >= 0 ? "text-green-700" : "text-red-600"}`}>{rupee(r.v)}</p>
+                  </div>
+                ),
+                seeAllHref: "/reports", seeAllLabel: "Open Reports",
+                emptyText: "No profit data.",
+              }}
+            />
+
+            <DrillMetricCard icon={TrendingDown} color="red" label="Expenses" te="ఖర్చులు"
+              value={rupee(data?.expenses.total)} sub={`${data?.expenses.count || 0} entries`} testid="metric-expenses"
+              drill={{
+                title: "Expenses in this period",
+                fetcher: async () => (await axios.get(`${API}/expenses`, { params: { start_date: start, end_date: endOfDay(end) } })).data,
+                renderRow: (r) => (
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-slate-800 truncate">{r.category || "—"}</p>
+                      <p className="text-xs text-slate-500 truncate">{fmtDay(r.date)} · {r.note || ""}</p>
+                    </div>
+                    <p className="font-semibold text-red-600 shrink-0">{rupee(r.amount)}</p>
+                  </div>
+                ),
+                totalKey: "amount", totalFormatter: rupee,
+                seeAllHref: "/expenses", seeAllLabel: "Open Expenses",
+                emptyText: "No expenses recorded.",
+              }}
+            />
+
+            <DrillMetricCard icon={ArrowDownCircle} color="emerald" label="Cash In" te="వచ్చిన నగదు"
+              value={rupee(cash?.inflow)} sub="sales paid + loans collected" testid="metric-cashin"
+              drill={{
+                title: "Money that came in",
+                fetcher: async () => {
+                  const [bills, loans] = await Promise.all([
+                    axios.get(`${API}/bills`, { params: { start_date: start, end_date: endOfDay(end) } }),
+                    axios.get(`${API}/loans/pending`),
+                  ]);
+                  const inflow = [];
+                  bills.data.forEach((b) => {
+                    if ((b.paid_amount || 0) > 0)
+                      inflow.push({ label: `Bill #${b.bill_no} - ${b.customer_name}`, sub: `${fmtDay(b.date)} · payment`, amount: b.paid_amount });
+                  });
+                  return inflow.sort((a, b) => b.amount - a.amount);
+                },
+                renderRow: (r) => (
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-slate-800">{r.label}</p>
+                      <p className="text-xs text-slate-500">{r.sub}</p>
+                    </div>
+                    <p className="font-semibold text-emerald-700 shrink-0">{rupee(r.amount)}</p>
+                  </div>
+                ),
+                totalKey: "amount", totalFormatter: rupee,
+                seeAllHref: "/billing", seeAllLabel: "Open Billing",
+                emptyText: "No inflow recorded.",
+              }}
+            />
+
+            <DrillMetricCard icon={ArrowUpCircle} color="orange" label="Cash Out" te="వెళ్లిన నగదు"
+              value={rupee(cash?.outflow)} sub="purchases + expenses" testid="metric-cashout"
+              drill={{
+                title: "Money that went out",
+                fetcher: async () => {
+                  const [pur, exp] = await Promise.all([
+                    axios.get(`${API}/purchases`, { params: { start_date: start, end_date: endOfDay(end) } }),
+                    axios.get(`${API}/expenses`, { params: { start_date: start, end_date: endOfDay(end) } }),
+                  ]);
+                  const rows = [];
+                  pur.data.forEach((p) => rows.push({
+                    label: `Purchase - ${p.product_name}`, sub: `${fmtDay(p.date)} · ${p.supplier || "—"}`, amount: p.total_cost || (p.purchase_price * p.quantity),
+                  }));
+                  exp.data.forEach((e) => rows.push({
+                    label: `Expense - ${e.category}`, sub: `${fmtDay(e.date)} · ${e.note || ""}`, amount: e.amount,
+                  }));
+                  return rows.sort((a, b) => b.amount - a.amount);
+                },
+                renderRow: (r) => (
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-slate-800">{r.label}</p>
+                      <p className="text-xs text-slate-500 truncate">{r.sub}</p>
+                    </div>
+                    <p className="font-semibold text-orange-600 shrink-0">{rupee(r.amount)}</p>
+                  </div>
+                ),
+                totalKey: "amount", totalFormatter: rupee,
+                seeAllHref: "/purchases", seeAllLabel: "Open Purchases",
+                emptyText: "No outflow recorded.",
+              }}
+            />
+
+            <DrillMetricCard icon={Wallet} color="blue" label="Purchases" te="కొనుగోళ్లు"
+              value={rupee(data?.purchases.total)} sub={`${data?.purchases.count || 0} entries`} testid="metric-purchases"
+              drill={{
+                title: "Purchases in this period",
+                fetcher: async () => (await axios.get(`${API}/purchases`, { params: { start_date: start, end_date: endOfDay(end) } })).data,
+                renderRow: (p) => (
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-slate-800">{p.product_name}</p>
+                      <p className="text-xs text-slate-500 truncate">{fmtDay(p.date)} · {p.supplier || "—"} · qty {p.quantity}</p>
+                    </div>
+                    <p className="font-semibold text-blue-700 shrink-0">{rupee(p.total_cost || (p.purchase_price * p.quantity))}</p>
+                  </div>
+                ),
+                totalKey: "total_cost", totalFormatter: rupee,
+                seeAllHref: "/purchases", seeAllLabel: "Open Purchases",
+                emptyText: "No purchases in this range.",
+              }}
+            />
+
+            <DrillMetricCard icon={IndianRupee} color="yellow" label="Credit Given" te="అప్పు ఇచ్చినది"
+              value={rupee(data?.sales.credit_given)} sub="unpaid this period" testid="metric-credit"
+              drill={{
+                title: "Credit issued in this period",
+                fetcher: async () => {
+                  const bills = (await axios.get(`${API}/bills`, { params: { start_date: start, end_date: endOfDay(end) } })).data;
+                  return bills.filter((b) => (b.balance_amount || 0) > 0);
+                },
+                renderRow: (b) => (
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-medium text-slate-800 truncate">#{b.bill_no} · {b.customer_name}</p>
+                      <p className="text-xs text-slate-500">{fmtDay(b.date)} · balance</p>
+                    </div>
+                    <p className="font-semibold text-yellow-700 shrink-0">{rupee(b.balance_amount)}</p>
+                  </div>
+                ),
+                totalKey: "balance_amount", totalFormatter: rupee,
+                seeAllHref: "/loans", seeAllLabel: "Open Loans",
+                emptyText: "No credit issued in this range.",
+              }}
+            />
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -140,7 +334,7 @@ const AccountsPage = () => {
               </CardContent>
             </Card>
 
-            {/* Expenses by category */}
+            {/* Expenses by category (rows are hover-drill; click category to open the Expenses page filtered mentally) */}
             <Card>
               <CardHeader><CardTitle className="text-base">Expenses by Category</CardTitle></CardHeader>
               <CardContent className="p-0">
@@ -153,10 +347,7 @@ const AccountsPage = () => {
                   </TableHeader>
                   <TableBody>
                     {data?.expenses.by_category.map((c, i) => (
-                      <TableRow key={i} data-testid={`expense-cat-${i}`}>
-                        <TableCell>{c.category}</TableCell>
-                        <TableCell className="text-right font-medium text-red-600">{rupee(c.amount)}</TableCell>
-                      </TableRow>
+                      <CategoryDrillRow key={i} c={c} start={start} end={end} rupee={rupee} fmtDay={fmtDay} idx={i} />
                     ))}
                   </TableBody>
                 </Table>
@@ -182,22 +373,62 @@ const colorMap = {
   slate: "bg-slate-100 text-slate-600",
 };
 
-const MetricCard = ({ icon: Icon, color, label, te, value, sub, testid }) => (
-  <Card data-testid={testid}>
-    <CardContent className="p-4">
-      <div className="flex items-center gap-3 mb-2">
-        <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${colorMap[color]}`}>
-          <Icon className="w-5 h-5" />
+// Row-level drill for the Expenses-by-Category card
+const CategoryDrillRow = ({ c, start, end, rupee, fmtDay, idx }) => {
+  const [rows, setRows] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const load = async () => {
+    if (rows !== null || loading) return;
+    setLoading(true);
+    try {
+      const r = await axios.get(`${API}/expenses`, { params: { start_date: start, end_date: endOfDay(end) } });
+      setRows(r.data.filter((e) => (e.category || "") === c.category));
+    } catch { setRows([]); } finally { setLoading(false); }
+  };
+  return (
+    <HoverCard openDelay={150} closeDelay={80} onOpenChange={(o) => { if (o) load(); }}>
+      <HoverCardTrigger asChild>
+        <TableRow className="cursor-help" data-testid={`expense-cat-${idx}`}>
+          <TableCell>{c.category}</TableCell>
+          <TableCell className="text-right font-medium text-red-600">{rupee(c.amount)}</TableCell>
+        </TableRow>
+      </HoverCardTrigger>
+      <HoverCardContent side="left" align="start" className="w-96 max-w-[95vw] p-0">
+        <div className="p-3 border-b border-slate-100">
+          <p className="text-xs uppercase tracking-wide text-slate-400">{c.category} — items</p>
+          <p className="font-heading text-lg font-bold text-slate-800">{rupee(c.amount)}</p>
         </div>
-        <div>
-          <p className="text-xs text-slate-500 leading-tight">{label}</p>
-          <p className="font-telugu text-[11px] text-slate-400">{te}</p>
+        <div className="max-h-72 overflow-auto">
+          {loading && <div className="p-4 text-sm text-slate-500">Loading…</div>}
+          {!loading && rows && rows.length === 0 && (
+            <div className="p-4 text-sm text-slate-400 text-center">No entries.</div>
+          )}
+          {!loading && rows && rows.length > 0 && (
+            <ul className="divide-y divide-slate-100">
+              {rows.slice(0, 8).map((r) => (
+                <li key={r.id} className="px-3 py-2 text-sm flex justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-slate-800">{r.note || "—"}</p>
+                    <p className="text-xs text-slate-500">{fmtDay(r.date)}</p>
+                  </div>
+                  <p className="font-semibold text-red-600 shrink-0">{rupee(r.amount)}</p>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
-      </div>
-      <p className="font-heading text-xl font-bold text-slate-800">{value}</p>
-      <p className="text-[11px] text-slate-400 mt-0.5">{sub}</p>
-    </CardContent>
-  </Card>
-);
+        <div className="p-3 border-t border-slate-100 bg-slate-50 flex items-center justify-between">
+          <span className="text-xs text-slate-500">
+            {rows && `${Math.min(rows.length, 8)} of ${rows.length}`}
+          </span>
+          <a href="/expenses" target="_blank" rel="noopener noreferrer"
+            className="text-xs font-medium text-green-700 hover:text-green-800 inline-flex items-center gap-1">
+            Open Expenses <ExternalLink className="w-3.5 h-3.5" />
+          </a>
+        </div>
+      </HoverCardContent>
+    </HoverCard>
+  );
+};
 
 export default AccountsPage;

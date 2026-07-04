@@ -65,8 +65,14 @@ See /app/memory/test_credentials.md — admin / swarna123
   - POST /api/data/reset-auth — safe reset: writes a full backup ZIP to disk first, wipes users, re-seeds admin/swarna123, returns backup absolute path and size. Business data (products/customers/bills/loans/purchases/expenses) preserved.
   - GET /api/data/backup/download/{name} — regex-guarded backup download
   - New DataPage.jsx (sidebar "Data & Backup") with big warning box, confirm phrase "RESET AUTH", admin password re-entry, backup-path display + copy-to-clipboard + download link.
-- Frontend polish: Aadhaar customer field validated to exactly 12 digits (already in previous session, verified); new Hamali Quick Payout card on Expenses page (amber highlight) that logs an expense with category=Hamali → Day Book's hamali_payouts picks it up automatically.
+- Frontend polish: Aadhaar customer field validated to exactly 12 digits; new Hamali Quick Payout card on Expenses page (amber highlight) that logs an expense with category=Hamali → Day Book's hamali_payouts picks it up automatically.
 - Backend testing subagent ran 55/55 test cases passing (31 existing + 24 new Data endpoints).
+
+## 2026-07-04 — Drill-down metrics on Dashboard + Accounts
+- Added shared `DrillMetricCard` component (frontend/src/components/DrillMetricCard.jsx) that wraps a metric with a HoverCard popover: on hover, lazily fetches and shows top-N underlying rows with a running total and a "Open [Section] ↗" link that opens the source page in a new tab.
+- Dashboard: every stat card now drills — Today's Sales → today's bills; Cash Received → today's cash portion per bill; Credit Given → today's bills with balance > 0; Pending Loans → all bills with balance > 0; Total Products → stock list; Total Customers → customers list. Low Stock and Recent Bills cards gained "Open Stock ↗" / "Open Reports ↗" header links.
+- Accounts page: all 8 metric cards drill (Revenue, COGS, Gross Profit, Expenses, Cash In, Cash Out, Purchases, Credit Given) — each shows the actual rows/lines with totals and a see-all link (Reports / Purchases / Expenses / Loans / Billing / Day Book depending on the metric). Expenses-by-Category rows also drill into the individual expenses in that category.
+- Bugfix while wiring: server-side date filter uses string $lte on ISO timestamps, so end_date="YYYY-MM-DD" excluded today's records; introduced endOfDay()/endOfToday() helpers that append "T23:59:59".
 
 ## Notes
 - Daily report date matching uses stored ISO date prefix (UTC), consistent with dashboard.

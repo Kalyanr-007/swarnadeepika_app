@@ -238,6 +238,18 @@ backend:
           comment: "✅ PASSED - All regression endpoints working correctly. GET /api/dashboard/stats (200 OK), GET /api/reports/daily (200 OK), GET /api/reports/summary (200 OK with profit/cash_flow/expenses), GET /api/purchases (200 OK), GET /api/expenses (200 OK), GET /api/shop-info (200 OK). No breaking changes detected."
 
 frontend:
+  - task: "Drill-down metric cards (Dashboard + Accounts)"
+    implemented: true
+    working: "NA"
+    file: "frontend/src/components/DrillMetricCard.jsx, frontend/src/pages/DashboardPage.jsx, frontend/src/pages/AccountsPage.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "New shared DrillMetricCard wraps every KPI with a HoverCard popover. On hover, it lazily fetches the raw rows behind the number, shows top N with running total, and displays an 'Open [Section] ↗' link that opens the source page in a new tab (target=_blank). Wired to all 6 Dashboard stats and all 8 Accounts metrics. Manually screenshot-verified: hovering 'Today's Sales' opens a popover listing today's 7 bills with totals + 'Open Reports' link, and Accounts→Revenue shows the underlying bills for the selected period. Also added end-of-day date suffix helper so 'today' filter includes bills timestamped later in the same day."
+
   - task: "Day Summary page (Day Book)"
     implemented: true
     working: "NA"
