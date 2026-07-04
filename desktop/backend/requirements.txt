@@ -1,4 +1,8 @@
-fastapi==0.115.6
-uvicorn==0.34.0
-pydantic==2.10.4
-bcrypt==4.2.1
+# Loose lower bounds so pip picks the best pre-built wheel for the user's Python.
+# Python 3.14 on Windows only has wheels for pydantic-core >= 2.41 (shipped with
+# pydantic 2.12) and bcrypt >= 4.3. Older pins forced source builds that require
+# Rust + MSVC and blew up on end-user machines.
+fastapi>=0.115.6
+uvicorn>=0.34.0
+pydantic>=2.12.0
+bcrypt>=4.3.0

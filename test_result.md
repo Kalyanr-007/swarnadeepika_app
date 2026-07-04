@@ -162,6 +162,18 @@ backend:
           agent: "main"
           comment: "Fixed 4 bugs: Product INSERT was missing bag_size_kg; Customer INSERT missing aadhaar; Bill INSERT missing cash_amount/upi_amount; loan_payments INSERT missing method. Added /api/reports/day-summary and /api/subsidy/{preview,apply} endpoints. Also added /api/data/{info,export,reset-auth,backup/download/{name}} - verified via TestClient (info shows sqlite backend + db_path, export streams zip, reset-auth backs up + wipes users + re-seeds admin). Not tested through subagent because desktop backend is not run by supervisor."
 
+  - task: "Windows installer: fix pip build failure on Python 3.14 (pydantic-core / bcrypt wheels)"
+    implemented: true
+    working: "NA"
+    file: "desktop/backend/requirements.txt, backend/requirements.txt, desktop/run_local.bat, install.bat"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "User reported install.bat fails on Windows when Python 3.14 is the resolved interpreter: pip tries to build pydantic-core 2.27.2 from source (no cp314-win_amd64 wheel exists for that version), needs Rust + MSVC link.exe. Fix: bumped pydantic to >=2.12.0 (pulls pydantic-core >=2.41 which has cp314 Windows wheels) and bcrypt to >=4.3.0 in BOTH requirements files. Also rewrote desktop/run_local.bat to prefer 'py -3.12' via the Windows py launcher (falls back to 3.11/3.13/3.10/python), added a clearer error message on pip failure. install.bat now specifically installs Python 3.12 via winget (not just any Python) and deletes a stale venv if it was created with the wrong interpreter. In-container smoke test: pip resolved pydantic 2.13.4 + bcrypt 5.0.0, backend restarted OK, /api/auth/login and /api/dashboard/stats respond 200 as before. Desktop app.py TestClient smoke test also 200. Please run a full backend regression to catch any pydantic 2.10 → 2.13 breaking changes."
+
   - task: "Purchases: payment methods + supplier autocomplete + Declare-in-Stock flow"
     implemented: true
     working: true
@@ -354,9 +366,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Purchases: payment methods + supplier autocomplete + Declare-in-Stock flow"
-    - "Suppliers CRUD"
-    - "Segregated Accounts endpoint"
+    - "Windows installer: fix pip build failure on Python 3.14 (pydantic-core / bcrypt wheels)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
