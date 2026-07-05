@@ -90,6 +90,7 @@ const Layout = ({ children, user, onLogout }) => {
   const [privacy, setPrivacy] = useState(() => {
     try { return localStorage.getItem("privacyMode") === "1"; } catch { return false; }
   });
+  const [showCalc, setShowCalc] = useState(false);
 
   useEffect(() => {
     try { localStorage.setItem("privacyMode", privacy ? "1" : "0"); } catch { /* ignore */ }
@@ -192,27 +193,18 @@ const Layout = ({ children, user, onLogout }) => {
           
           {/* Quick Calculator Tool */}
           <div className="pt-2 px-3">
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button 
-                  variant="outline" 
-                  className="w-full flex items-center justify-start gap-3 border-green-200 text-green-700 hover:bg-green-50"
-                  data-testid="calculator-btn"
-                >
-                  <CalculatorIcon className="w-4 h-4" />
-                  <div className="text-left">
-                    <span className="font-telugu block leading-tight">క్యాలిక్యులేటర్</span>
-                    <span className="text-[10px] text-slate-400">Calculator</span>
-                  </div>
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="sm:max-w-[300px] p-0 border-none bg-transparent shadow-none">
-                <DialogHeader className="sr-only">
-                  <DialogTitle>Calculator</DialogTitle>
-                </DialogHeader>
-                <Calculator />
-              </DialogContent>
-            </Dialog>
+            <Button 
+              variant="outline" 
+              className={`w-full flex items-center justify-start gap-3 border-green-200 text-green-700 hover:bg-green-50 ${showCalc ? "bg-green-50" : ""}`}
+              onClick={() => setShowCalc(!showCalc)}
+              data-testid="calculator-btn"
+            >
+              <CalculatorIcon className="w-4 h-4" />
+              <div className="text-left">
+                <span className="font-telugu block leading-tight">క్యాలిక్యులేటర్</span>
+                <span className="text-[10px] text-slate-400">Calculator</span>
+              </div>
+            </Button>
           </div>
         </nav>
 
@@ -237,7 +229,10 @@ const Layout = ({ children, user, onLogout }) => {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-auto">{children}</main>
+      <main className="flex-1 overflow-auto relative">
+        {children}
+        {showCalc && <Calculator onClose={() => setShowCalc(false)} />}
+      </main>
     </div>
   );
 };

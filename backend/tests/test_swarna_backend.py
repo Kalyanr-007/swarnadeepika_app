@@ -331,3 +331,60 @@ class TestRegression:
         r = s.get(f"{API}/products/admin")
         after = next(p for p in r.json() if p["id"] == pid)["quantity"]
         assert after == initial_qty - 2
+
+    def test_bill_creation_credit_logic(self, s, temp_product):
+        # 1. Test cash bill has balance 0
+        item = {
+            "product_id": temp_product["id"],
+            "product_name": temp_product["name"],
+            "batch_no": temp_product["batch_no"],
+            "mfg_date": temp_product["mfg_date"],
+            "exp_date": temp_product["exp_date"],
+            "quantity": 1,
+            "unit": temp_product["unit"],
+            "rate": 140.0,
+            "amount": 140.0,
+        }
+        r = s.post(f"{API}/bills", json={
+            "customer_name": "CASH_USER", "village": "V",
+            "items": [item], "total_amount": 140.0,
+            "payment_type": "cash", "cash_amount": 140.0,
+        })
+        assert r.status_code == 200
+        assert r.json()["balance_amount"] == 0.0
+
+        # 2. Test credit bill has positive balance
+        r = s.post(f"{API}/bills", json={
+            "customer_name": "CREDIT_USER", "village": "V",
+            "items": [item], "total_amount": 140.0,
+            "payment_type": "credit", "cash_amount": 50.0,
+        })
+        assert r.status_code == 200
+        assert r.json()["balance_amount"] == 90.0
+
+    def test_declare_stock_v2(self, s, temp_category):
+        # 1. Create a purchase (not in stock)
+        p_name = f"NEW_PROD_{uuid.uuid4().hex[:6]}"
+        r = s.post(f"{API}/purchases", json={
+            "supplier": "S1", "product_name": p_name,
+            "quantity": 10, "unit": "bag", "purchase_price": 500.0,
+            "payment_method": "cash", "update_stock": False
+        })
+        assert r.status_code == 200
+        pur = r.json()
+        pid = pur["id"]
+
+        # 2. Declare in stock (POST)
+        r = s.post(f"{API}/purchases/{pid}/declare-in-stock", json={
+            "category_id": temp_category["id"],
+            "mrp": 600.0, "selling_price": 550.0,
+            "bag_size_kg": 50.0
+        })
+        assert r.status_code == 200, r.text
+        
+        # 3. Verify product exists and has stock
+        r = s.get(f"{API}/products/admin")
+        prods = r.json()
+        found = next(p for p in prods if p["name"] == p_name)
+        assert found["quantity"] == 10
+        assert found["purchase_price"] == 500.0

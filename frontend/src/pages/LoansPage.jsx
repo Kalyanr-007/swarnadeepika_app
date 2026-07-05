@@ -322,13 +322,35 @@ const LoansPage = () => {
                   className="flex-1"
                   onClick={() => setPaymentAmount(selectedBill.balance_amount.toString())}
                 >
-                  Full Amount
+                  Fill Balance
+                </Button>
+                <Button
+                  onClick={async () => {
+                    const amount = selectedBill.balance_amount;
+                    try {
+                      await axios.post(`${API}/loans/payment`, {
+                        bill_id: selectedBill.id,
+                        amount: amount,
+                        notes: paymentNotes || "Settle up",
+                        method: paymentMethod
+                      });
+                      toast.success("Settled up successfully!");
+                      setShowPaymentModal(false);
+                      fetchPendingLoans();
+                    } catch (error) {
+                      toast.error("Failed to settle up");
+                    }
+                  }}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700"
+                  data-testid="settle-up-btn"
+                >
+                  Settle Up
                 </Button>
                 <Button
                   onClick={handleRecordPayment}
                   className="flex-1 bg-green-700 hover:bg-green-800"
                 >
-                  Record Payment
+                  Record
                 </Button>
               </div>
             </div>

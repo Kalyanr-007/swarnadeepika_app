@@ -107,7 +107,7 @@ const DashboardPage = () => {
         title: "Credit given today",
         fetcher: async () => {
           const b = (await axios.get(`${API}/bills`, { params: { start_date: today(), end_date: endOfToday() } })).data;
-          return b.filter((x) => (x.balance_amount || 0) > 0);
+          return b.filter((x) => x.payment_type === 'credit');
         },
         renderRow: (b) => (
           <div className="flex items-center justify-between gap-2">

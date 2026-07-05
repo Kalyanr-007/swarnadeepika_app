@@ -179,7 +179,7 @@ const BillingPage = () => {
     const upiAmt = paymentMode === "upi" ? totalAmount
       : paymentMode === "credit" ? (parseFloat(upiPaid) || 0) : 0;
     const paid = cashAmt + upiAmt;
-    const finalType = totalAmount - paid > 0 ? "credit" : "cash";
+    const finalType = (totalAmount - paid) > 0.01 ? "credit" : "cash";
 
     try {
       const billData = {

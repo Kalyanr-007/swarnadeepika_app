@@ -210,7 +210,18 @@ class BillCreate(BaseModel):
     upi_amount: float = 0
 
 
-class LoanPaymentCreate(BaseModel):
+class DeclareStockRequest(BaseModel):
+    category_id: Optional[str] = None
+    mrp: Optional[float] = None
+    selling_price: Optional[float] = None
+    mfg_date: Optional[str] = None
+    exp_date: Optional[str] = None
+    bag_size_kg: Optional[float] = 0
+    name_telugu: Optional[str] = ""
+
+
+class PurchaseCreate(BaseModel):
+
     bill_id: str
     amount: float
     notes: str = ""
@@ -566,7 +577,7 @@ def create_bill(bill: BillCreate):
     with _lock, get_conn() as conn:
         last = conn.execute("SELECT MAX(bill_no) AS m FROM bills").fetchone()
         next_no = (last["m"] + 1) if last and last["m"] else 1
-        balance = bill.total_amount - bill.paid_amount
+        balance = max(0.0, bill.total_amount - bill.paid_amount) if bill.payment_type != "cash" else 0.0
         obj = {
             "id": new_id(),
             "bill_no": next_no,
@@ -630,7 +641,7 @@ def get_bill(bill_id: str):
 @api.get("/loans/pending")
 def pending_loans():
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM bills WHERE balance_amount>0 ORDER BY date DESC").fetchall()
+        rows = conn.execute("SELECT * FROM bills WHERE balance_amount>0.01 ORDER BY date DESC").fetchall()
     return [row_to_bill(r) for r in rows]
 
 
@@ -640,10 +651,10 @@ def record_payment(payment: LoanPaymentCreate):
         b = conn.execute("SELECT * FROM bills WHERE id=?", (payment.bill_id,)).fetchone()
         if not b:
             raise HTTPException(404, "Bill not found")
-        if payment.amount > b["balance_amount"]:
+        if payment.amount > b["balance_amount"] + 0.01:
             raise HTTPException(400, "Payment amount exceeds balance")
         new_paid = b["paid_amount"] + payment.amount
-        new_balance = b["total_amount"] - new_paid
+        new_balance = max(0.0, b["total_amount"] - new_paid)
         conn.execute("UPDATE bills SET paid_amount=?, balance_amount=? WHERE id=?",
                      (new_paid, new_balance, payment.bill_id))
         obj = {"id": new_id(), "bill_id": payment.bill_id, "amount": payment.amount,
@@ -661,7 +672,7 @@ def bill_payments(bill_id: str):
 @api.get("/loans/customer/{customer_id}")
 def customer_loans(customer_id: str):
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM bills WHERE customer_id=? AND balance_amount>0", (customer_id,)).fetchall()
+        rows = conn.execute("SELECT * FROM bills WHERE customer_id=? AND balance_amount>0.01", (customer_id,)).fetchall()
     bills = [row_to_bill(r) for r in rows]
     return {"bills": bills, "total_pending": sum(b["balance_amount"] for b in bills)}
 
@@ -672,14 +683,14 @@ def dashboard_stats():
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     with get_conn() as conn:
         today_bills = [row_to_bill(r) for r in conn.execute("SELECT * FROM bills WHERE date LIKE ?", (today + "%",)).fetchall()]
-        pending = [row_to_bill(r) for r in conn.execute("SELECT * FROM bills WHERE balance_amount>0").fetchall()]
+        pending = [row_to_bill(r) for r in conn.execute("SELECT * FROM bills WHERE balance_amount>0.01").fetchall()]
         low_stock = [dict(r) for r in conn.execute("SELECT * FROM products WHERE quantity<10").fetchall()]
         total_products = conn.execute("SELECT COUNT(*) AS c FROM products").fetchone()["c"]
         total_customers = conn.execute("SELECT COUNT(*) AS c FROM customers").fetchone()["c"]
     return {
         "today_sales": sum(b["total_amount"] for b in today_bills),
-        "today_cash": sum(b["paid_amount"] for b in today_bills if b["payment_type"] == "cash"),
-        "today_credit": sum(b["total_amount"] - b["paid_amount"] for b in today_bills if b["payment_type"] == "credit"),
+        "today_cash": sum(b.get("paid_amount", 0) for b in today_bills),
+        "today_credit": sum(b.get("balance_amount", 0) for b in today_bills),
         "total_pending_loans": sum(b["balance_amount"] for b in pending),
         "pending_loan_count": len(pending),
         "low_stock_items": low_stock,
@@ -800,6 +811,34 @@ def delete_purchase(purchase_id: str):
     return {"success": True}
 
 
+@api.post("/purchases/{purchase_id}/declare-in-stock")
+def declare_purchase_in_stock(purchase_id: str, req: DeclareStockRequest):
+    with _lock, get_conn() as conn:
+        p = conn.execute("SELECT * FROM purchases WHERE id=?", (purchase_id,)).fetchone()
+        if not p:
+            raise HTTPException(404, "Purchase not found")
+        
+        pid = p["product_id"]
+        if not pid:
+            # Create new product
+            pid = new_id()
+            conn.execute(
+                """INSERT INTO products (id,name,name_telugu,category_id,batch_no,mfg_date,exp_date,
+                   purchase_price,mrp,selling_price,quantity,unit,bag_size_kg,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (pid, p["product_name"], req.name_telugu or "", req.category_id, p["batch_no"] or "",
+                 req.mfg_date or "", req.exp_date or "", p["purchase_price"],
+                 req.mrp or 0, req.selling_price or 0, p["quantity"], p["unit"], req.bag_size_kg or 0, now_iso()),
+            )
+            conn.execute("UPDATE purchases SET product_id=? WHERE id=?", (pid, purchase_id))
+        else:
+            # Update existing
+            conn.execute("UPDATE products SET quantity = quantity + ?, purchase_price = ? WHERE id=?",
+                         (p["quantity"], p["purchase_price"], pid))
+            
+    return {"success": True, "product_id": pid}
+
+
 # --- Purchase Returns ---
 @api.post("/purchase-returns")
 def create_purchase_return(p: PurchaseReturnCreate):
@@ -842,6 +881,71 @@ def delete_purchase_return(return_id: str):
     return {"success": True}
 
 
+@api.get("/reports/accounts-segregated")
+def accounts_segregated(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    today_s = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    start_date = start_date or today_s
+    end_date = end_date or today_s
+
+    with get_conn() as conn:
+        bills_all = [row_to_bill(r) for r in conn.execute("SELECT * FROM bills").fetchall()]
+        loans_all = [dict(r) for r in conn.execute("SELECT * FROM loan_payments").fetchall()]
+        purchases_all = [dict(r) for r in conn.execute("SELECT * FROM purchases").fetchall()]
+        expenses_all = [dict(r) for r in conn.execute("SELECT * FROM expenses").fetchall()]
+
+    bills = [b for b in bills_all if _in_range(b.get("date"), start_date, end_date)]
+    loans = [p for p in loans_all if _in_range(p.get("payment_date"), start_date, end_date)]
+    purchases = [p for p in purchases_all if _in_range(p.get("date"), start_date, end_date)]
+    expenses = [e for e in expenses_all if _in_range(e.get("date"), start_date, end_date)]
+
+    # Farmer side
+    farmer_sales = sum(b["total_amount"] for b in bills)
+    farmer_cash_in = (
+        sum(b.get("cash_amount", 0) or 0 for b in bills)
+        + sum(b.get("paid_amount", 0) for b in bills if "cash_amount" not in b and b.get("payment_type") == "cash")
+        + sum(p["amount"] for p in loans if p.get("method") == "cash")
+    )
+    farmer_upi_in = (
+        sum(b.get("upi_amount", 0) or 0 for b in bills)
+        + sum(b.get("paid_amount", 0) for b in bills if "upi_amount" not in b and b.get("payment_type") == "upi")
+        + sum(p["amount"] for p in loans if p.get("method") == "upi")
+    )
+    farmer_credit_given = sum(b.get("balance_amount", 0) for b in bills)
+    farmer_credit_recovered = sum(p["amount"] for p in loans)
+
+    # My side
+    my_purchases_total = sum(p["total_cost"] for p in purchases)
+    my_purchases_by_method = {}
+    for p in purchases:
+        m = p.get("payment_method") or "cash"
+        my_purchases_by_method[m] = my_purchases_by_method.get(m, 0) + (p.get("paid_amount", 0) or 0)
+    my_credit_taken = sum(p.get("balance_amount", 0) for p in purchases)
+    my_expenses_total = sum(e["amount"] for e in expenses)
+
+    # Overall
+    total_in = farmer_cash_in + farmer_upi_in
+    total_out = sum(p.get("paid_amount", 0) or 0 for p in purchases) + my_expenses_total
+
+    return {
+        "start_date": start_date, "end_date": end_date,
+        "farmer_side": {
+            "sales": farmer_sales, "bill_count": len(bills),
+            "cash_in": farmer_cash_in, "upi_in": farmer_upi_in,
+            "credit_given": farmer_credit_given, "credit_recovered": farmer_credit_recovered,
+        },
+        "my_side": {
+            "purchases_total": my_purchases_total, "purchase_count": len(purchases),
+            "purchases_by_method": my_purchases_by_method,
+            "credit_taken": my_credit_taken,
+            "expenses": my_expenses_total, "expense_count": len(expenses),
+        },
+        "overall": {
+            "money_in": total_in, "money_out": total_out,
+            "net": total_in - total_out,
+        },
+    }
+
+
 @api.get("/reports/summary")
 def get_summary(start_date: Optional[str] = None, end_date: Optional[str] = None):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -854,11 +958,11 @@ def get_summary(start_date: Optional[str] = None, end_date: Optional[str] = None
         payments = [dict(r) for r in conn.execute("SELECT * FROM loan_payments").fetchall()]
         products = [dict(r) for r in conn.execute("SELECT * FROM products").fetchall()]
         returns = [dict(r) for r in conn.execute("SELECT * FROM purchase_returns").fetchall()]
-    bills = [b for b in bills if _in_range(b["date"], start_date, end_date)]
-    purchases = [p for p in purchases if _in_range(p["date"], start_date, end_date)]
-    expenses = [e for e in expenses if _in_range(e["date"], start_date, end_date)]
-    payments = [p for p in payments if _in_range(p["payment_date"], start_date, end_date)]
-    returns = [r for r in returns if _in_range(r["date"], start_date, end_date)]
+    bills = [b for b in bills if _in_range(b.get("date"), start_date, end_date)]
+    purchases = [p for p in purchases if _in_range(p.get("date"), start_date, end_date)]
+    expenses = [e for e in expenses if _in_range(e.get("date"), start_date, end_date)]
+    payments = [p for p in payments if _in_range(p.get("payment_date"), start_date, end_date)]
+    returns = [r for r in returns if _in_range(r.get("date"), start_date, end_date)]
     cost_by_id = {p["id"]: p.get("purchase_price", 0) for p in products}
 
     total_sales = sum(b["total_amount"] for b in bills)
@@ -871,8 +975,8 @@ def get_summary(start_date: Optional[str] = None, end_date: Optional[str] = None
 
     cogs = 0
     for b in bills:
-        for it in b["items"]:
-            cogs += cost_by_id.get(it.get("product_id"), 0) * it["quantity"]
+        for it in b.get("items", []):
+            cogs += cost_by_id.get(it.get("product_id"), 0) * it.get("quantity", 0)
     gross_profit = total_sales - cogs
 
     cash_in = cash_received + loan_collections + total_refunds

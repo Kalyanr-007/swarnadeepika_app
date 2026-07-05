@@ -476,7 +476,11 @@ async def create_bill(bill: BillCreate):
     if cash_amount == 0 and upi_amount == 0 and bill.paid_amount:
         cash_amount = bill.paid_amount  # legacy: treat paid as cash
     paid = cash_amount + upi_amount
-    balance = bill.total_amount - paid
+    
+    if bill.payment_type == "cash":
+        balance = 0.0
+    else:
+        balance = max(0.0, bill.total_amount - paid)
 
     bill_obj = Bill(
         bill_no=next_bill_no,
@@ -540,7 +544,7 @@ async def get_bill(bill_id: str):
 async def get_pending_loans():
     """Get all bills with pending balance"""
     bills = await db.bills.find(
-        {"balance_amount": {"$gt": 0}},
+        {"balance_amount": {"$gt": 0.01}},
         {"_id": 0}
     ).sort("date", -1).to_list(1000)
     return bills
@@ -552,18 +556,18 @@ async def record_loan_payment(payment: LoanPaymentCreate):
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
     
-    if payment.amount > bill['balance_amount']:
+    if payment.amount > bill['balance_amount'] + 0.01:
         raise HTTPException(status_code=400, detail="Payment amount exceeds balance")
     
     # Update bill
     new_paid = bill['paid_amount'] + payment.amount
-    new_balance = bill['total_amount'] - new_paid
+    new_balance = max(0.0, bill['total_amount'] - new_paid)
     
     await db.bills.update_one(
         {"id": payment.bill_id},
         {"$set": {"paid_amount": new_paid, "balance_amount": new_balance}}
     )
-    
+
     # Record payment
     payment_obj = LoanPayment(
         bill_id=payment.bill_id,
@@ -585,7 +589,7 @@ async def get_bill_payments(bill_id: str):
 async def get_customer_loans(customer_id: str):
     """Get all pending loans for a customer"""
     bills = await db.bills.find(
-        {"customer_id": customer_id, "balance_amount": {"$gt": 0}},
+        {"customer_id": customer_id, "balance_amount": {"$gt": 0.01}},
         {"_id": 0}
     ).to_list(100)
     
@@ -853,20 +857,23 @@ async def accounts_segregated(start_date: Optional[str] = None, end_date: Option
     start_date = start_date or today_s
     end_date = end_date or today_s
 
-    bills = [b for b in await db.bills.find({}, {"_id": 0}).to_list(5000) if _in_range(b["date"], start_date, end_date)]
+    bills = [b for b in await db.bills.find({}, {"_id": 0}).to_list(5000) if _in_range(b.get("date"), start_date, end_date)]
     loans = [p for p in await db.loan_payments.find({}, {"_id": 0}).to_list(5000) if _in_range(p.get("payment_date", ""), start_date, end_date)]
-    purchases = [p for p in await db.purchases.find({}, {"_id": 0}).to_list(5000) if _in_range(p["date"], start_date, end_date)]
-    expenses = [e for e in await db.expenses.find({}, {"_id": 0}).to_list(5000) if _in_range(e["date"], start_date, end_date)]
+    purchases = [p for p in await db.purchases.find({}, {"_id": 0}).to_list(5000) if _in_range(p.get("date"), start_date, end_date)]
+    expenses = [e for e in await db.expenses.find({}, {"_id": 0}).to_list(5000) if _in_range(e.get("date"), start_date, end_date)]
 
     # Farmer side (money from farmers)
     farmer_sales = sum(b["total_amount"] for b in bills)
+    # New bills use cash_amount; legacy cash bills use paid_amount
     farmer_cash_in = (
         sum(b.get("cash_amount", 0) or 0 for b in bills)
-        + sum(b.get("paid_amount", 0) for b in bills if not b.get("cash_amount") and not b.get("upi_amount") and b.get("payment_type") == "cash")
+        + sum(b.get("paid_amount", 0) for b in bills if "cash_amount" not in b and b.get("payment_type") == "cash")
         + sum(p["amount"] for p in loans if (p.get("method") or "cash") == "cash")
     )
+    # New bills use upi_amount; legacy upi bills (if any) use paid_amount
     farmer_upi_in = (
         sum(b.get("upi_amount", 0) or 0 for b in bills)
+        + sum(b.get("paid_amount", 0) for b in bills if "upi_amount" not in b and b.get("payment_type") == "upi")
         + sum(p["amount"] for p in loans if p.get("method") == "upi")
     )
     farmer_credit_given = sum(b.get("balance_amount", 0) for b in bills)
@@ -914,10 +921,10 @@ async def get_summary(start_date: Optional[str] = None, end_date: Optional[str] 
     start_date = start_date or today
     end_date = end_date or today
 
-    bills = [b for b in await db.bills.find({}, {"_id": 0}).to_list(5000) if _in_range(b["date"], start_date, end_date)]
-    purchases = [p for p in await db.purchases.find({}, {"_id": 0}).to_list(5000) if _in_range(p["date"], start_date, end_date)]
-    expenses = [e for e in await db.expenses.find({}, {"_id": 0}).to_list(5000) if _in_range(e["date"], start_date, end_date)]
-    payments = [p for p in await db.loan_payments.find({}, {"_id": 0}).to_list(5000) if _in_range(p["payment_date"], start_date, end_date)]
+    bills = [b for b in await db.bills.find({}, {"_id": 0}).to_list(5000) if _in_range(b.get("date"), start_date, end_date)]
+    purchases = [p for p in await db.purchases.find({}, {"_id": 0}).to_list(5000) if _in_range(p.get("date"), start_date, end_date)]
+    expenses = [e for e in await db.expenses.find({}, {"_id": 0}).to_list(5000) if _in_range(e.get("date"), start_date, end_date)]
+    payments = [p for p in await db.loan_payments.find({}, {"_id": 0}).to_list(5000) if _in_range(p.get("payment_date"), start_date, end_date)]
     products = await db.products.find({}, {"_id": 0}).to_list(5000)
     cost_by_id = {p["id"]: p.get("purchase_price", 0) for p in products}
 
@@ -1153,11 +1160,11 @@ async def get_dashboard_stats():
         {"_id": 0}
     ).to_list(1000)
     today_sales = sum(b['total_amount'] for b in today_bills)
-    today_cash = sum(b['paid_amount'] for b in today_bills if b['payment_type'] == 'cash')
-    today_credit = sum(b['total_amount'] - b['paid_amount'] for b in today_bills if b['payment_type'] == 'credit')
+    today_cash = sum(b.get('paid_amount', 0) for b in today_bills)
+    today_credit = sum(b.get('balance_amount', 0) for b in today_bills)
     
     # Total pending loans
-    pending_bills = await db.bills.find({"balance_amount": {"$gt": 0}}, {"_id": 0}).to_list(1000)
+    pending_bills = await db.bills.find({"balance_amount": {"$gt": 0.01}}, {"_id": 0}).to_list(1000)
     total_pending = sum(b['balance_amount'] for b in pending_bills)
     
     # Low stock items (quantity < 10)
