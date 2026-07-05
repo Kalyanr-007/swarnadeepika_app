@@ -220,8 +220,16 @@ class DeclareStockRequest(BaseModel):
     name_telugu: Optional[str] = ""
 
 
-class PurchaseCreate(BaseModel):
+class LoanPayment(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    bill_id: str
+    amount: float
+    payment_date: str = Field(default_factory=now_iso)
+    notes: str = ""
+    method: str = "cash"
 
+
+class LoanPaymentCreate(BaseModel):
     bill_id: str
     amount: float
     notes: str = ""
@@ -243,6 +251,8 @@ class ExpenseCreate(BaseModel):
 
 class PurchaseCreate(BaseModel):
     supplier: Optional[str] = ""
+    supplier_id: Optional[str] = None
+    supplier_phone: Optional[str] = ""
     product_id: Optional[str] = None
     product_name: str
     quantity: int
@@ -250,6 +260,10 @@ class PurchaseCreate(BaseModel):
     purchase_price: float
     batch_no: Optional[str] = ""
     date: Optional[str] = None
+    # Payment
+    payment_method: str = "cash"
+    reference_number: Optional[str] = ""
+    paid_amount: Optional[float] = None
     update_stock: bool = True
 
 
