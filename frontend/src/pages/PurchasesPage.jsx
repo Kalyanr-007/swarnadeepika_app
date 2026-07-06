@@ -61,6 +61,7 @@ const PurchasesPage = () => {
 
   // Declare-in-stock dialog
   const [declareTarget, setDeclareTarget] = useState(null); // purchase being declared
+  const [decQty, setDecQty] = useState("");
   const [decCat, setDecCat] = useState("");
   const [decMrp, setDecMrp] = useState("");
   const [decSell, setDecSell] = useState("");
@@ -166,17 +167,24 @@ const PurchasesPage = () => {
 
   const openDeclare = (p) => {
     setDeclareTarget(p);
+    setDecQty(p.remaining_quantity !== undefined ? p.remaining_quantity : p.quantity);
     setDecCat(""); setDecMrp(""); setDecSell(""); setDecMfg(""); setDecExp("");
     setDecBag(""); setDecNameTe("");
   };
 
   const submitDeclare = async () => {
     if (!declareTarget) return;
+    const dq = parseInt(decQty);
+    if (!dq || dq <= 0) return toast.error("Enter a valid quantity to declare");
+    const remaining = declareTarget.remaining_quantity !== undefined ? declareTarget.remaining_quantity : declareTarget.quantity;
+    if (dq > remaining) return toast.error(`Cannot declare more than ${remaining}`);
+
     // Only require category if this is a NEW product
     if (!declareTarget.product_id && !decCat) return toast.error("Category is required for a new product");
     setDeclaring(true);
     try {
       await axios.post(`${API}/purchases/${declareTarget.id}/declare-in-stock`, {
+        quantity: dq,
         category_id: decCat || null,
         mrp: decMrp ? parseFloat(decMrp) : null,
         selling_price: decSell ? parseFloat(decSell) : null,
@@ -185,7 +193,7 @@ const PurchasesPage = () => {
         bag_size_kg: decBag ? parseFloat(decBag) : 0,
         name_telugu: decNameTe,
       });
-      toast.success(`Added ${declareTarget.quantity} ${declareTarget.unit} of ${declareTarget.product_name} to stock`);
+      toast.success(`Added ${dq} ${declareTarget.unit} of ${declareTarget.product_name} to stock`);
       setDeclareTarget(null);
       fetchPurchases();
       axios.get(`${API}/products/admin`).then((r) => setProducts(r.data)).catch(() => {});
@@ -272,8 +280,22 @@ const PurchasesPage = () => {
                 </div>
                 <div>
                   <Label>Unit</Label>
-                  <Input value={unit} onChange={(e) => setUnit(e.target.value)}
-                    placeholder="bag / L / kg" data-testid="purchase-unit-input" />
+                  <Select value={unit} onValueChange={setUnit}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="bag">Bag</SelectItem>
+                      <SelectItem value="kg">Kg</SelectItem>
+                      <SelectItem value="litre">Litre</SelectItem>
+                      <SelectItem value="packet">Packet</SelectItem>
+                      <SelectItem value="bottle">Bottle</SelectItem>
+                      <SelectItem value="piece">Piece</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {unit === "other" && (
+                    <Input className="mt-2" placeholder="Specify unit" 
+                      onChange={(e) => setUnit(e.target.value)} />
+                  )}
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -408,11 +430,18 @@ const PurchasesPage = () => {
                           <CheckCircle2 className="w-3 h-3 mr-1" /> In stock
                         </Badge>
                       ) : (
-                        <Button size="sm" variant="outline" className="h-7 border-amber-300 text-amber-700 hover:bg-amber-50"
-                          onClick={() => openDeclare(p)}
-                          data-testid={`declare-btn-${p.id}`}>
-                          <PackageOpen className="w-3 h-3 mr-1" /> Declare in Stock
-                        </Button>
+                        <div className="flex flex-col gap-1">
+                          <Button size="sm" variant="outline" className="h-7 border-amber-300 text-amber-700 hover:bg-amber-50"
+                            onClick={() => openDeclare(p)}
+                            data-testid={`declare-btn-${p.id}`}>
+                            <PackageOpen className="w-3 h-3 mr-1" /> {p.remaining_quantity !== undefined && p.remaining_quantity < p.quantity ? "Declare Remaining" : "Declare in Stock"}
+                          </Button>
+                          {p.remaining_quantity !== undefined && p.remaining_quantity < p.quantity && (
+                            <p className="text-[10px] text-amber-600 font-medium">
+                              Partial: {p.quantity - p.remaining_quantity} in stock
+                            </p>
+                          )}
+                        </div>
                       )}
                     </TableCell>
                     <TableCell className="text-right">
@@ -442,55 +471,71 @@ const PurchasesPage = () => {
             <DialogTitle>Declare in Stock</DialogTitle>
             <DialogDescription>
               {declareTarget?.product_id
-                ? `Add ${declareTarget?.quantity} ${declareTarget?.unit} to the existing stock of "${declareTarget?.product_name}".`
-                : `Create a new product entry for "${declareTarget?.product_name}" with the details below, then add the ${declareTarget?.quantity} ${declareTarget?.unit} to inventory.`}
+                ? `Add stock from purchase of "${declareTarget?.product_name}".`
+                : `Create a new product entry for "${declareTarget?.product_name}" and add stock.`}
             </DialogDescription>
           </DialogHeader>
-          {!declareTarget?.product_id && (
-            <div className="space-y-3">
-              <div>
-                <Label>Category *</Label>
-                <Select value={decCat} onValueChange={setDecCat}>
-                  <SelectTrigger data-testid="declare-category"><SelectValue placeholder="Choose category" /></SelectTrigger>
-                  <SelectContent>
-                    {categories.map((c) => (
-                      <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <Label>MRP (₹)</Label>
-                  <Input type="number" value={decMrp} onChange={(e) => setDecMrp(e.target.value)} placeholder="e.g. 650" data-testid="declare-mrp" />
-                </div>
-                <div>
-                  <Label>Selling price (₹)</Label>
-                  <Input type="number" value={decSell} onChange={(e) => setDecSell(e.target.value)} placeholder="e.g. 600" data-testid="declare-sell" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <Label>Mfg date</Label>
-                  <Input type="date" value={decMfg} onChange={(e) => setDecMfg(e.target.value)} data-testid="declare-mfg" />
-                </div>
-                <div>
-                  <Label>Expiry date</Label>
-                  <Input type="date" value={decExp} onChange={(e) => setDecExp(e.target.value)} data-testid="declare-exp" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <Label>Bag size (kg) — for subsidy CSV sync</Label>
-                  <Input type="number" value={decBag} onChange={(e) => setDecBag(e.target.value)} placeholder="e.g. 45" data-testid="declare-bag" />
-                </div>
-                <div>
-                  <Label>Telugu name</Label>
-                  <Input value={decNameTe} onChange={(e) => setDecNameTe(e.target.value)} placeholder="Optional" data-testid="declare-tename" />
-                </div>
-              </div>
+          <div className="space-y-4">
+            <div className="bg-amber-50 p-3 rounded-md border border-amber-100 mb-2">
+              <p className="text-xs text-amber-800">
+                Purchase Quantity: <b>{declareTarget?.quantity} {declareTarget?.unit}</b><br/>
+                Remaining to declare: <b>{declareTarget?.remaining_quantity !== undefined ? declareTarget?.remaining_quantity : declareTarget?.quantity} {declareTarget?.unit}</b>
+              </p>
             </div>
-          )}
+            
+            <div>
+              <Label>Quantity to declare now *</Label>
+              <Input type="number" value={decQty} onChange={(e) => setDecQty(e.target.value)} 
+                placeholder="How many units to add to stock?" data-testid="declare-qty-input" />
+            </div>
+
+            {!declareTarget?.product_id && (
+              <div className="space-y-3 pt-2 border-t border-slate-100">
+                <p className="text-[11px] font-bold uppercase text-slate-400">Product Details (New Item)</p>
+                <div>
+                  <Label>Category *</Label>
+                  <Select value={decCat} onValueChange={setDecCat}>
+                    <SelectTrigger data-testid="declare-category"><SelectValue placeholder="Choose category" /></SelectTrigger>
+                    <SelectContent>
+                      {categories.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>MRP (₹)</Label>
+                    <Input type="number" value={decMrp} onChange={(e) => setDecMrp(e.target.value)} placeholder="e.g. 650" data-testid="declare-mrp" />
+                  </div>
+                  <div>
+                    <Label>Selling price (₹)</Label>
+                    <Input type="number" value={decSell} onChange={(e) => setDecSell(e.target.value)} placeholder="e.g. 600" data-testid="declare-sell" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>Mfg date</Label>
+                    <Input type="date" value={decMfg} onChange={(e) => setDecMfg(e.target.value)} data-testid="declare-mfg" />
+                  </div>
+                  <div>
+                    <Label>Expiry date</Label>
+                    <Input type="date" value={decExp} onChange={(e) => setDecExp(e.target.value)} data-testid="declare-exp" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>Pack size (e.g. 45kg, 1L)</Label>
+                    <Input type="number" value={decBag} onChange={(e) => setDecBag(e.target.value)} placeholder="e.g. 45" data-testid="declare-bag" />
+                  </div>
+                  <div>
+                    <Label>Telugu name</Label>
+                    <Input value={decNameTe} onChange={(e) => setDecNameTe(e.target.value)} placeholder="Optional" data-testid="declare-tename" />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeclareTarget(null)}>Cancel</Button>
             <Button onClick={submitDeclare} disabled={declaring} className="bg-green-700 hover:bg-green-800"

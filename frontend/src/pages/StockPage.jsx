@@ -123,6 +123,7 @@ const StockPage = ({ user }) => {
 
   const buildProductData = () => ({
     ...productForm,
+    unit: productForm.unit === "other" ? productForm.other_unit : productForm.unit,
     purchase_price: parseFloat(productForm.purchase_price),
     mrp: parseFloat(productForm.mrp),
     selling_price: parseFloat(productForm.selling_price),
@@ -569,16 +570,27 @@ const StockPage = ({ user }) => {
                   <SelectItem value="packet">Packet</SelectItem>
                   <SelectItem value="bottle">Bottle</SelectItem>
                   <SelectItem value="bag">Bag</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
                 </SelectContent>
               </Select>
             </div>
+            {productForm.unit === "other" && (
+              <div>
+                <Label>Specify Unit</Label>
+                <Input
+                  value={productForm.other_unit || ""}
+                  onChange={(e) => setProductForm({ ...productForm, other_unit: e.target.value })}
+                  placeholder="e.g. Box, Tin"
+                />
+              </div>
+            )}
             <div>
-              <Label>Bag Size (kg)</Label>
+              <Label>Pack/Bag Size (Value)</Label>
               <Input
                 type="number"
                 value={productForm.bag_size_kg}
                 onChange={(e) => setProductForm({ ...productForm, bag_size_kg: e.target.value })}
-                placeholder="e.g. 45 or 50 (for govt MT→bags)"
+                placeholder="e.g. 45, 1, 500"
                 data-testid="product-bagsize-input"
               />
             </div>

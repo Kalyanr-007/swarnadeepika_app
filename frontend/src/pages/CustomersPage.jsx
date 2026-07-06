@@ -73,10 +73,15 @@ const CustomersPage = () => {
     setCustomerForm({ name: "", village: "", phone: "", address: "", aadhaar: "" });
   };
 
-  const validateAadhaar = () => {
+  const validateForm = () => {
     const a = customerForm.aadhaar?.trim();
     if (a && !/^\d{12}$/.test(a)) {
       toast.error("Aadhaar must be exactly 12 digits");
+      return false;
+    }
+    const p = customerForm.phone?.trim();
+    if (p && !/^\d{10}$/.test(p)) {
+      toast.error("Phone number must be exactly 10 digits");
       return false;
     }
     return true;
@@ -87,7 +92,7 @@ const CustomersPage = () => {
       toast.error("Name and village are required");
       return;
     }
-    if (!validateAadhaar()) return;
+    if (!validateForm()) return;
     try {
       await axios.post(`${API}/customers`, customerForm);
       toast.success("Customer added!");
@@ -100,7 +105,7 @@ const CustomersPage = () => {
   };
 
   const handleUpdateCustomer = async () => {
-    if (!validateAadhaar()) return;
+    if (!validateForm()) return;
     try {
       await axios.put(`${API}/customers/${editingCustomer.id}`, customerForm);
       toast.success("Customer updated!");
@@ -265,11 +270,11 @@ const CustomersPage = () => {
               />
             </div>
             <div>
-              <Label>Phone</Label>
+              <Label>Phone (10 digits)</Label>
               <Input
                 value={customerForm.phone}
-                onChange={(e) => setCustomerForm({ ...customerForm, phone: e.target.value })}
-                placeholder="Phone number"
+                onChange={(e) => setCustomerForm({ ...customerForm, phone: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                placeholder="9999999999"
               />
             </div>
             <div>

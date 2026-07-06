@@ -3,19 +3,27 @@ import axios from "axios";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
+import { Label } from "../components/ui/label";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "../components/ui/table";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "../components/ui/dialog";
+import {
   TrendingUp, TrendingDown, IndianRupee, PiggyBank, Wallet,
   ArrowDownCircle, ArrowUpCircle, Scale, ExternalLink,
-  Users as UsersIcon, Store, Globe,
+  Users as UsersIcon, Store, Globe, Plus,
 } from "lucide-react";
 import { format } from "date-fns";
 import DrillMetricCard from "../components/DrillMetricCard";
 import {
   HoverCard, HoverCardContent, HoverCardTrigger,
 } from "../components/ui/hover-card";
+import { toast } from "sonner";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const today = () => new Date().toISOString().slice(0, 10);
@@ -30,6 +38,10 @@ const AccountsPage = () => {
   const [seg, setSeg] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const [showIncomeModal, setShowIncomeModal] = useState(false);
+  const [incomeForm, setIncomeForm] = useState({ amount: "", source: "", note: "" });
+  const [savingIncome, setSavingIncome] = useState(false);
+
   const fetchSummary = useCallback(async () => {
     setLoading(true);
     try {
@@ -43,6 +55,23 @@ const AccountsPage = () => {
   }, [start, end]);
 
   useEffect(() => { fetchSummary(); }, [fetchSummary]);
+
+  const handleAddIncome = async () => {
+    if (!incomeForm.amount || !incomeForm.source) return toast.error("Amount and source required");
+    setSavingIncome(true);
+    try {
+      await axios.post(`${API}/incomes`, {
+        ...incomeForm,
+        amount: parseFloat(incomeForm.amount)
+      });
+      toast.success("Income logged!");
+      setShowIncomeModal(false);
+      setIncomeForm({ amount: "", source: "", note: "" });
+      fetchSummary();
+    } catch {
+      toast.error("Failed to log income");
+    } finally { setSavingIncome(false); }
+  };
 
   const rupee = (n) => `₹${(n || 0).toLocaleString()}`;
   const fmtDay = (d) => { try { return format(new Date(d), "dd MMM"); } catch { return d; } };
@@ -63,6 +92,9 @@ const AccountsPage = () => {
           <p className="font-telugu text-slate-500">ఖాతాలు — నగదు & లాభం</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setShowIncomeModal(true)} className="border-green-600 text-green-700 hover:bg-green-50">
+            <Plus className="w-4 h-4 mr-1" /> Log Income
+          </Button>
           <Button variant="outline" size="sm" onClick={setToday} data-testid="range-today-btn">Today</Button>
           <Button variant="outline" size="sm" onClick={setThisMonth} data-testid="range-month-btn">This Month</Button>
           <Input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="w-36" data-testid="accounts-start-date" />
@@ -117,11 +149,14 @@ const AccountsPage = () => {
                 </CardTitle>
               </CardHeader>
               <CardContent className="text-sm space-y-1">
-                <SegRow label="Sales" v={rupee(seg?.farmer_side?.sales)} sub={`${seg?.farmer_side?.bill_count || 0} bills`} />
-                <SegRow label="Cash in" v={rupee(seg?.farmer_side?.cash_in)} strong />
-                <SegRow label="UPI in" v={rupee(seg?.farmer_side?.upi_in)} strong />
+                <SegRow label="Sales Revenue" v={rupee(seg?.farmer_side?.sales)} sub={`${seg?.farmer_side?.bill_count || 0} bills`} />
+                <SegRow label="Bill Cash/UPI" v={rupee((seg?.farmer_side?.bill_cash_in || 0) + (seg?.farmer_side?.bill_upi_in || 0))} tone="green" />
+                <SegRow label="Dues Collected" v={rupee(seg?.farmer_side?.credit_recovered)} tone="emerald" />
+                <div className="pt-1 border-t border-blue-100 flex justify-between items-center">
+                  <span className="font-semibold text-blue-800">Total Cash In</span>
+                  <span className="font-bold text-blue-800">{rupee(seg?.farmer_side?.cash_in + seg?.farmer_side?.upi_in)}</span>
+                </div>
                 <SegRow label="Credit given" v={rupee(seg?.farmer_side?.credit_given)} tone="yellow" />
-                <SegRow label="Credit recovered" v={rupee(seg?.farmer_side?.credit_recovered)} tone="green" />
                 <a href="/reports" target="_blank" rel="noopener noreferrer"
                   className="text-xs text-blue-700 hover:text-blue-800 inline-flex items-center gap-1 pt-1">
                   Open Farmer Report <ExternalLink className="w-3 h-3" />
@@ -139,6 +174,7 @@ const AccountsPage = () => {
               <CardContent className="text-sm space-y-1">
                 <SegRow label="Purchases" v={rupee(seg?.my_side?.purchases_total)} sub={`${seg?.my_side?.purchase_count || 0} entries`} />
                 <SegRow label="Expenses" v={rupee(seg?.my_side?.expenses)} sub={`${seg?.my_side?.expense_count || 0} entries`} tone="red" />
+                {seg?.misc_income > 0 && <SegRow label="Misc Income" v={rupee(seg?.misc_income)} tone="green" />}
                 <SegRow label="Credit taken" v={rupee(seg?.my_side?.credit_taken)} tone="yellow" />
                 {seg?.my_side?.purchases_by_method && Object.keys(seg.my_side.purchases_by_method).length > 0 && (
                   <div className="pt-1 border-t border-slate-200">
@@ -276,18 +312,21 @@ const AccountsPage = () => {
             />
 
             <DrillMetricCard icon={ArrowDownCircle} color="emerald" label="Cash In" te="వచ్చిన నగదు"
-              value={rupee(cash?.inflow)} sub="sales paid + loans collected" testid="metric-cashin"
+              value={rupee(seg?.overall?.money_in)} sub="sales + dues + misc" testid="metric-cashin"
               drill={{
                 title: "Money that came in",
                 fetcher: async () => {
-                  const [bills, loans] = await Promise.all([
+                  const [bills, incomes] = await Promise.all([
                     axios.get(`${API}/bills`, { params: { start_date: start, end_date: endOfDay(end) } }),
-                    axios.get(`${API}/loans/pending`),
+                    axios.get(`${API}/incomes`, { params: { start_date: start, end_date: endOfDay(end) } }),
                   ]);
                   const inflow = [];
                   bills.data.forEach((b) => {
                     if ((b.paid_amount || 0) > 0)
-                      inflow.push({ label: `Bill #${b.bill_no} - ${b.customer_name}`, sub: `${fmtDay(b.date)} · payment`, amount: b.paid_amount });
+                      inflow.push({ label: `Sale Bill #${b.bill_no}`, sub: `${b.customer_name}`, amount: b.paid_amount });
+                  });
+                  incomes.data.forEach((i) => {
+                    inflow.push({ label: `Income: ${i.source}`, sub: i.note || "Misc", amount: i.amount });
                   });
                   return inflow.sort((a, b) => b.amount - a.amount);
                 },
@@ -295,7 +334,7 @@ const AccountsPage = () => {
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <p className="truncate text-slate-800">{r.label}</p>
-                      <p className="text-xs text-slate-500">{r.sub}</p>
+                      <p className="text-xs text-slate-500 truncate">{r.sub}</p>
                     </div>
                     <p className="font-semibold text-emerald-700 shrink-0">{rupee(r.amount)}</p>
                   </div>
@@ -441,6 +480,38 @@ const AccountsPage = () => {
           </div>
         </>
       )}
+
+      {/* Log Income Modal */}
+      <Dialog open={showIncomeModal} onOpenChange={setShowIncomeModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Log Miscellaneous Income (Cash In)</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Amount (₹) *</Label>
+              <Input type="number" value={incomeForm.amount}
+                onChange={(e) => setIncomeForm({ ...incomeForm, amount: e.target.value })}
+                placeholder="0.00" />
+            </div>
+            <div>
+              <Label>Source *</Label>
+              <Input value={incomeForm.source}
+                onChange={(e) => setIncomeForm({ ...incomeForm, source: e.target.value })}
+                placeholder="e.g., Old bags sale, Commission" />
+            </div>
+            <div>
+              <Label>Note</Label>
+              <Input value={incomeForm.note}
+                onChange={(e) => setIncomeForm({ ...incomeForm, note: e.target.value })}
+                placeholder="Optional details" />
+            </div>
+            <Button onClick={handleAddIncome} disabled={savingIncome} className="w-full bg-green-700 hover:bg-green-800">
+              {savingIncome ? "Saving..." : "Log Income"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

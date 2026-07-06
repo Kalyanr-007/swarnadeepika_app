@@ -74,56 +74,6 @@ const DashboardPage = () => {
       },
     },
     {
-      title: "Cash Received", titleTelugu: "నగదు",
-      value: rupee(stats?.today_cash), sub: "cash portion of today's bills",
-      icon: TrendingUp, color: "emerald", testid: "stat-today-cash",
-      drill: {
-        title: "Cash collected today",
-        fetcher: async () => {
-          const b = (await axios.get(`${API}/bills`, { params: { start_date: today(), end_date: endOfToday() } })).data;
-          return b.filter((x) => (x.cash_amount || x.paid_amount || 0) > 0).map((x) => ({
-            ...x, effective_cash: x.cash_amount || (x.payment_type === "cash" ? (x.paid_amount || x.total_amount) : 0),
-          })).filter((x) => x.effective_cash > 0);
-        },
-        renderRow: (b) => (
-          <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <p className="font-medium text-slate-800 truncate">#{b.bill_no} · {b.customer_name}</p>
-              <p className="text-xs text-slate-500">{b.village}</p>
-            </div>
-            <p className="font-semibold text-emerald-700 shrink-0">{rupee(b.effective_cash)}</p>
-          </div>
-        ),
-        totalKey: "effective_cash", totalFormatter: rupee,
-        seeAllHref: "/day-summary", seeAllLabel: "Open Day Book",
-        emptyText: "No cash collected today.",
-      },
-    },
-    {
-      title: "Credit Given", titleTelugu: "అప్పు ఇచ్చారు",
-      value: rupee(stats?.today_credit), sub: "unpaid balance today",
-      icon: CreditCard, color: "yellow", testid: "stat-today-credit",
-      drill: {
-        title: "Credit given today",
-        fetcher: async () => {
-          const b = (await axios.get(`${API}/bills`, { params: { start_date: today(), end_date: endOfToday() } })).data;
-          return b.filter((x) => x.payment_type === 'credit');
-        },
-        renderRow: (b) => (
-          <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <p className="font-medium text-slate-800 truncate">#{b.bill_no} · {b.customer_name}</p>
-              <p className="text-xs text-slate-500">{b.village}</p>
-            </div>
-            <p className="font-semibold text-yellow-700 shrink-0">{rupee(b.balance_amount)}</p>
-          </div>
-        ),
-        totalKey: "balance_amount", totalFormatter: rupee,
-        seeAllHref: "/loans", seeAllLabel: "Open Loans",
-        emptyText: "No credit issued today.",
-      },
-    },
-    {
       title: "Pending Loans", titleTelugu: "మొత్తం బకాయి",
       value: rupee(stats?.total_pending_loans), sub: `${stats?.pending_loan_count || 0} customers`,
       icon: CreditCard, color: "orange", testid: "stat-pending-loans",
@@ -145,8 +95,8 @@ const DashboardPage = () => {
       },
     },
     {
-      title: "Total Products", titleTelugu: "మొత్తం ఉత్పత్తులు",
-      value: stats?.total_products?.toLocaleString() || "0", sub: "in stock",
+      title: "Current Stock", titleTelugu: "ప్రస్తుత స్టాక్",
+      value: stats?.total_products?.toLocaleString() || "0", sub: "unique items",
       icon: Package, color: "blue", testid: "stat-total-products",
       drill: {
         title: "Products in stock",
@@ -162,25 +112,6 @@ const DashboardPage = () => {
         ),
         seeAllHref: "/stock", seeAllLabel: "Open Stock",
         emptyText: "No products yet.",
-      },
-    },
-    {
-      title: "Total Customers", titleTelugu: "మొత్తం కస్టమర్లు",
-      value: stats?.total_customers?.toLocaleString() || "0", sub: "registered",
-      icon: Users, color: "purple", testid: "stat-total-customers",
-      drill: {
-        title: "Customers",
-        fetcher: async () => (await axios.get(`${API}/customers`)).data,
-        renderRow: (c) => (
-          <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <p className="font-medium text-slate-800 truncate">{c.name}</p>
-              <p className="text-xs text-slate-500 truncate">{c.village} · {c.phone || "—"}</p>
-            </div>
-          </div>
-        ),
-        seeAllHref: "/customers", seeAllLabel: "Open Customers",
-        emptyText: "No customers yet.",
       },
     },
   ];
@@ -220,7 +151,42 @@ const DashboardPage = () => {
       </div>
 
       {/* Bottom Section */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Most Sold Items Section */}
+        <Card className="lg:col-span-1 border-0 shadow-sm">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <TrendingUp className="w-5 h-5 text-emerald-600" />
+              <span>Most Sold Items</span>
+              <span className="font-telugu text-sm text-slate-400 font-normal ml-2">ఎక్కువగా అమ్మినవి</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {stats?.most_sold_items?.length > 0 ? (
+              <div className="space-y-4">
+                {stats.most_sold_items.map((item, idx) => (
+                  <div key={idx} className="flex items-center justify-between">
+                    <div className="min-w-0 flex-1 mr-4">
+                      <div className="flex items-center gap-2">
+                        <span className="w-5 h-5 flex items-center justify-center bg-slate-100 rounded-full text-[10px] font-bold text-slate-500">{idx+1}</span>
+                        <p className="font-medium text-slate-800 truncate text-sm">{item.name}</p>
+                      </div>
+                      <p className="text-[10px] text-slate-400 ml-7">Revenue: {rupee(item.total_revenue)}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="font-bold text-emerald-600 text-sm">{item.total_qty} {item.unit || 'units'}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8 text-slate-400">
+                <p>No sales data yet</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         {/* Low Stock Alert */}
         <Card className="border-0 shadow-sm">
           <CardHeader className="pb-3">

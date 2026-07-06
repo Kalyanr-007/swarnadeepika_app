@@ -612,6 +612,12 @@ class ExpenseCreate(BaseModel):
     note: Optional[str] = ""
     date: Optional[str] = None
 
+class IncomeCreate(BaseModel):
+    amount: float
+    source: str
+    note: Optional[str] = ""
+    date: Optional[str] = None
+
 class PurchaseCreate(BaseModel):
     supplier: Optional[str] = ""
     supplier_id: Optional[str] = None
@@ -671,6 +677,33 @@ async def delete_expense(expense_id: str):
         raise HTTPException(status_code=404, detail="Expense not found")
     return {"success": True}
 
+@api_router.post("/incomes")
+async def create_income(i: IncomeCreate):
+    obj = {
+        "id": str(uuid.uuid4()),
+        "amount": i.amount,
+        "source": i.source,
+        "note": i.note or "",
+        "date": i.date or datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.incomes.insert_one(dict(obj))
+    return obj
+
+@api_router.get("/incomes")
+async def get_incomes(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    items = await db.incomes.find({}, {"_id": 0}).sort("date", -1).to_list(2000)
+    if start_date or end_date:
+        items = [x for x in items if _in_range(x["date"], start_date, end_date)]
+    return items
+
+@api_router.delete("/incomes/{income_id}")
+async def delete_income(income_id: str):
+    r = await db.incomes.delete_one({"id": income_id})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Income not found")
+    return {"success": True}
+
 @api_router.post("/purchases")
 async def create_purchase(p: PurchaseCreate):
     total_cost = p.purchase_price * p.quantity
@@ -689,6 +722,7 @@ async def create_purchase(p: PurchaseCreate):
         "product_id": p.product_id,
         "product_name": p.product_name,
         "quantity": p.quantity,
+        "remaining_quantity": p.quantity,
         "unit": p.unit,
         "purchase_price": p.purchase_price,
         "total_cost": total_cost,
@@ -710,7 +744,8 @@ async def create_purchase(p: PurchaseCreate):
             {"$inc": {"quantity": p.quantity}, "$set": {"purchase_price": p.purchase_price}},
         )
         obj["declared_in_stock"] = True
-        await db.purchases.update_one({"id": obj["id"]}, {"$set": {"declared_in_stock": True}})
+        obj["remaining_quantity"] = 0
+        await db.purchases.update_one({"id": obj["id"]}, {"$set": {"declared_in_stock": True, "remaining_quantity": 0}})
 
     # If supplier name is new, upsert a minimal supplier record for future autocomplete
     if p.supplier and not p.supplier_id:
@@ -727,6 +762,7 @@ async def create_purchase(p: PurchaseCreate):
 
 class DeclareStockRequest(BaseModel):
     category_id: Optional[str] = None  # required when creating a new product
+    quantity: Optional[int] = None # how much of the purchase is being declared now
     mrp: Optional[float] = None
     selling_price: Optional[float] = None
     mfg_date: Optional[str] = None
@@ -743,8 +779,16 @@ async def declare_purchase_in_stock(purchase_id: str, req: DeclareStockRequest):
     purchase = await db.purchases.find_one({"id": purchase_id}, {"_id": 0})
     if not purchase:
         raise HTTPException(404, "Purchase not found")
-    if purchase.get("declared_in_stock"):
-        raise HTTPException(400, "Already declared in stock")
+    if purchase.get("declared_in_stock") and purchase.get("remaining_quantity", 0) <= 0:
+        raise HTTPException(400, "Already fully declared in stock")
+
+    qty_to_add = req.quantity if req.quantity is not None else purchase.get("remaining_quantity", purchase["quantity"])
+    if qty_to_add <= 0:
+        raise HTTPException(400, "Quantity must be greater than zero")
+    
+    current_remaining = purchase.get("remaining_quantity", purchase["quantity"])
+    if qty_to_add > current_remaining:
+        raise HTTPException(400, f"Cannot declare {qty_to_add}, only {current_remaining} remains in this purchase")
 
     product_id = purchase.get("product_id")
     if product_id:
@@ -754,7 +798,7 @@ async def declare_purchase_in_stock(purchase_id: str, req: DeclareStockRequest):
             raise HTTPException(404, "Linked product no longer exists")
         await db.products.update_one(
             {"id": product_id},
-            {"$inc": {"quantity": purchase["quantity"]},
+            {"$inc": {"quantity": qty_to_add},
              "$set": {"purchase_price": purchase["purchase_price"]}},
         )
     else:
@@ -772,7 +816,7 @@ async def declare_purchase_in_stock(purchase_id: str, req: DeclareStockRequest):
             "purchase_price": purchase["purchase_price"],
             "mrp": req.mrp if req.mrp is not None else purchase["purchase_price"],
             "selling_price": req.selling_price if req.selling_price is not None else purchase["purchase_price"],
-            "quantity": purchase["quantity"],
+            "quantity": qty_to_add,
             "unit": purchase.get("unit") or "piece",
             "bag_size_kg": req.bag_size_kg or 0,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -780,8 +824,24 @@ async def declare_purchase_in_stock(purchase_id: str, req: DeclareStockRequest):
         await db.products.insert_one(dict(new_prod))
         product_id = new_prod["id"]
 
-    await db.purchases.update_one({"id": purchase_id}, {"$set": {"declared_in_stock": True, "product_id": product_id}})
-    return {"success": True, "product_id": product_id, "quantity_added": purchase["quantity"]}
+    new_remaining = current_remaining - qty_to_add
+    is_fully_declared = (new_remaining <= 0)
+
+    await db.purchases.update_one(
+        {"id": purchase_id}, 
+        {"$set": {
+            "declared_in_stock": is_fully_declared, 
+            "product_id": product_id,
+            "remaining_quantity": new_remaining
+        }}
+    )
+    return {
+        "success": True, 
+        "product_id": product_id, 
+        "quantity_added": qty_to_add,
+        "remaining_quantity": new_remaining,
+        "is_fully_declared": is_fully_declared
+    }
 
 @api_router.get("/purchases")
 async def get_purchases(start_date: Optional[str] = None, end_date: Optional[str] = None):
@@ -861,21 +921,29 @@ async def accounts_segregated(start_date: Optional[str] = None, end_date: Option
     loans = [p for p in await db.loan_payments.find({}, {"_id": 0}).to_list(5000) if _in_range(p.get("payment_date", ""), start_date, end_date)]
     purchases = [p for p in await db.purchases.find({}, {"_id": 0}).to_list(5000) if _in_range(p.get("date"), start_date, end_date)]
     expenses = [e for e in await db.expenses.find({}, {"_id": 0}).to_list(5000) if _in_range(e.get("date"), start_date, end_date)]
+    incomes = [i for i in await db.incomes.find({}, {"_id": 0}).to_list(5000) if _in_range(i.get("date"), start_date, end_date)]
 
     # Farmer side (money from farmers)
     farmer_sales = sum(b["total_amount"] for b in bills)
     # New bills use cash_amount; legacy cash bills use paid_amount
-    farmer_cash_in = (
+    bill_cash_in = (
         sum(b.get("cash_amount", 0) or 0 for b in bills)
         + sum(b.get("paid_amount", 0) for b in bills if "cash_amount" not in b and b.get("payment_type") == "cash")
-        + sum(p["amount"] for p in loans if (p.get("method") or "cash") == "cash")
     )
     # New bills use upi_amount; legacy upi bills (if any) use paid_amount
-    farmer_upi_in = (
+    bill_upi_in = (
         sum(b.get("upi_amount", 0) or 0 for b in bills)
         + sum(b.get("paid_amount", 0) for b in bills if "upi_amount" not in b and b.get("payment_type") == "upi")
-        + sum(p["amount"] for p in loans if p.get("method") == "upi")
     )
+    
+    loan_cash_in = sum(p["amount"] for p in loans if (p.get("method") or "cash") == "cash")
+    loan_upi_in = sum(p["amount"] for p in loans if p.get("method") == "upi")
+    
+    misc_income = sum(i["amount"] for i in incomes)
+
+    farmer_cash_in = bill_cash_in + loan_cash_in
+    farmer_upi_in = bill_upi_in + loan_upi_in
+    
     farmer_credit_given = sum(b.get("balance_amount", 0) for b in bills)
     farmer_credit_recovered = sum(p["amount"] for p in loans)
 
@@ -890,7 +958,7 @@ async def accounts_segregated(start_date: Optional[str] = None, end_date: Option
     my_expenses_total = sum(e["amount"] for e in expenses)
 
     # Overall
-    total_in = farmer_cash_in + farmer_upi_in
+    total_in = farmer_cash_in + farmer_upi_in + misc_income
     total_out = (
         sum(p.get("paid_amount", 0) or 0 for p in purchases)
         + my_expenses_total
@@ -900,9 +968,12 @@ async def accounts_segregated(start_date: Optional[str] = None, end_date: Option
         "start_date": start_date, "end_date": end_date,
         "farmer_side": {
             "sales": farmer_sales, "bill_count": len(bills),
-            "cash_in": farmer_cash_in, "upi_in": farmer_upi_in,
+            "bill_cash_in": bill_cash_in, "bill_upi_in": bill_upi_in,
+            "loan_cash_in": loan_cash_in, "loan_upi_in": loan_upi_in,
+            "cash_in": farmer_cash_in, "upi_in": farmer_upi_in, # these now include loans
             "credit_given": farmer_credit_given, "credit_recovered": farmer_credit_recovered,
         },
+        "misc_income": misc_income,
         "my_side": {
             "purchases_total": my_purchases_total, "purchase_count": len(purchases),
             "purchases_by_method": my_purchases_by_method,
@@ -924,6 +995,7 @@ async def get_summary(start_date: Optional[str] = None, end_date: Optional[str] 
     bills = [b for b in await db.bills.find({}, {"_id": 0}).to_list(5000) if _in_range(b.get("date"), start_date, end_date)]
     purchases = [p for p in await db.purchases.find({}, {"_id": 0}).to_list(5000) if _in_range(p.get("date"), start_date, end_date)]
     expenses = [e for e in await db.expenses.find({}, {"_id": 0}).to_list(5000) if _in_range(e.get("date"), start_date, end_date)]
+    incomes = [i for i in await db.incomes.find({}, {"_id": 0}).to_list(5000) if _in_range(i.get("date"), start_date, end_date)]
     payments = [p for p in await db.loan_payments.find({}, {"_id": 0}).to_list(5000) if _in_range(p.get("payment_date"), start_date, end_date)]
     products = await db.products.find({}, {"_id": 0}).to_list(5000)
     cost_by_id = {p["id"]: p.get("purchase_price", 0) for p in products}
@@ -932,6 +1004,7 @@ async def get_summary(start_date: Optional[str] = None, end_date: Optional[str] 
     cash_received = sum(b["paid_amount"] for b in bills)
     credit_given = sum(b["balance_amount"] for b in bills)
     loan_collections = sum(p["amount"] for p in payments)
+    misc_income = sum(i["amount"] for i in incomes)
     total_purchases = sum(p["total_cost"] for p in purchases)
     total_expenses = sum(e["amount"] for e in expenses)
 
@@ -940,10 +1013,13 @@ async def get_summary(start_date: Optional[str] = None, end_date: Optional[str] 
         for it in b["items"]:
             cogs += cost_by_id.get(it.get("product_id"), 0) * it["quantity"]
     gross_profit = total_sales - cogs
-    net_profit = gross_profit - total_expenses
+    net_profit = gross_profit + misc_income - total_expenses
 
-    cash_in = cash_received + loan_collections
-    cash_out = total_purchases + total_expenses
+    cash_in = cash_received + loan_collections + misc_income
+    cash_out = (
+        sum(p.get("paid_amount", 0) or 0 for p in purchases)
+        + total_expenses
+    )
 
     cat_map = {}
     for e in expenses:
@@ -1160,38 +1236,59 @@ async def get_dashboard_stats():
         {"_id": 0}
     ).to_list(1000)
     today_sales = sum(b['total_amount'] for b in today_bills)
-    today_cash = sum(b.get('paid_amount', 0) for b in today_bills)
+    today_paid = sum(b.get('paid_amount', 0) for b in today_bills)
     today_credit = sum(b.get('balance_amount', 0) for b in today_bills)
-    
+
+    # Cash collected today (bills + loan payments)
+    today_loan_payments = await db.loan_payments.find({"payment_date": {"$regex": f"^{today}"}}).to_list(1000)
+    today_loan_collected = sum(p['amount'] for p in today_loan_payments)
+    today_cash = today_paid + today_loan_collected
+
     # Total pending loans
-    pending_bills = await db.bills.find({"balance_amount": {"$gt": 0.01}}, {"_id": 0}).to_list(1000)
+    pending_bills = await db.bills.find({"balance_amount": {"$gt": 0.01}}, {"_id": 0}).to_list(10000)
     total_pending = sum(b['balance_amount'] for b in pending_bills)
-    
+    pending_loan_count = len(set(b.get('customer_id') for b in pending_bills if b.get('customer_id')))
+
     # Low stock items (quantity < 10)
     low_stock = await db.products.find({"quantity": {"$lt": 10}}, {"_id": 0}).to_list(100)
-    
+
     # Total products
     total_products = await db.products.count_documents({})
-    
+
     # Total customers
     total_customers = await db.customers.count_documents({})
-    
+
     # Total bills today
     total_bills_today = len(today_bills)
-    
+
+    # Most Sold Items (all time top 5)
+    pipeline = [
+        {"$unwind": "$items"},
+        {"$group": {
+            "_id": "$items.product_id",
+            "name": {"$first": "$items.product_name"},
+            "total_qty": {"$sum": "$items.quantity"},
+            "unit": {"$first": "$items.unit"},
+            "total_revenue": {"$sum": "$items.amount"}
+        }},
+        {"$sort": {"total_qty": -1}},
+        {"$limit": 5}
+    ]
+    most_sold = await db.bills.aggregate(pipeline).to_list(5)
+
     return {
         "today_sales": today_sales,
         "today_cash": today_cash,
         "today_credit": today_credit,
         "total_pending_loans": total_pending,
-        "pending_loan_count": len(pending_bills),
+        "pending_loan_count": pending_loan_count,
         "low_stock_items": low_stock,
         "low_stock_count": len(low_stock),
         "total_products": total_products,
         "total_customers": total_customers,
-        "total_bills_today": total_bills_today
+        "total_bills_today": total_bills_today,
+        "most_sold_items": most_sold
     }
-
 @api_router.get("/dashboard/recent-bills")
 async def get_recent_bills():
     bills = await db.bills.find({}, {"_id": 0}).sort("date", -1).to_list(10)
